@@ -45,9 +45,14 @@ public final class LearningStore {
         self.now = now
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        if let url, let data = try? Data(contentsOf: url),
-           let saved = try? decoder.decode([String: [String: Votes]].self, from: data) {
+        guard let url, let data = try? Data(contentsOf: url) else { return }
+        if let saved = try? decoder.decode([String: [String: Votes]].self, from: data) {
             entries = saved
+        } else {
+            // Файл испорчен — не затираем молча: откладываем рядом, начинаем с чистого листа.
+            let backup = url.appendingPathExtension("corrupt")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.moveItem(at: url, to: backup)
         }
     }
 
@@ -111,6 +116,8 @@ public final class LearningStore {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
             try encoder.encode(entries).write(to: url, options: .atomic)
+            // Слова пользователя — только ему.
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
             NSLog("YinYang: не удалось сохранить правила: \(error)")
         }

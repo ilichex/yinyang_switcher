@@ -18,6 +18,8 @@ func typeText(_ input: String, category: AppCategory = .other, learned: @escapin
     for c in input {
         if TypingSession.boundaries.contains(c) {
             if let edit = session.boundary(c) {
+                // Правка стирает ровно то, что видно на экране.
+                #expect(String(screen.suffix(edit.deleteCount)) == edit.removed)
                 screen.removeLast(edit.deleteCount)
                 screen.append(contentsOf: edit.insert)
             }
@@ -139,7 +141,7 @@ func typeText(_ input: String, category: AppCategory = .other, learned: @escapin
         let session = TypingSession(detector: detector)
         session.type("ghbdtnr")
         let r = session.invertLastWord()
-        #expect(r?.edit == TextEdit(deleteCount: 7, insert: "приветк", switchTo: .ru))
+        #expect(r?.edit == TextEdit(removed: "ghbdtnr", insert: "приветк", switchTo: .ru))
         #expect(r?.change == WordChange(key: "ghbdtnr", from: .en, to: .ru))
     }
 
@@ -168,6 +170,51 @@ func typeText(_ input: String, category: AppCategory = .other, learned: @escapin
 
     @Test func pendingResolvedByNeighbours() {
         #expect(smart.convert("b ltkf")?.text == "и дела")
+    }
+}
+
+@Suite struct Taps {
+    /// Нажимает и отпускает модификатор: (момент нажатия, длительность).
+    func taps(_ count: Int, _ presses: [(Double, Double)]) -> [Bool] {
+        var d = TapDetector(count: count)
+        return presses.map { start, length in
+            d.press(at: start)
+            return d.release(at: start + length)
+        }
+    }
+
+    @Test func single() {
+        #expect(taps(1, [(0, 0.1)]) == [true])
+        #expect(taps(1, [(0, 0.5)]) == [false]) // удержание
+    }
+
+    @Test func double() {
+        #expect(taps(2, [(0, 0.1), (0.3, 0.1)]) == [false, true])
+        #expect(taps(2, [(0, 0.1), (1.0, 0.1)]) == [false, false]) // слишком медленно
+        #expect(taps(2, [(0, 0.1), (0.3, 0.1), (0.6, 0.1), (0.9, 0.1)]) == [false, true, false, true])
+    }
+
+    @Test func triple() {
+        #expect(taps(3, [(0, 0.1), (0.3, 0.1), (0.6, 0.1)]) == [false, false, true])
+        #expect(taps(3, [(0, 0.1), (0.3, 0.5), (0.9, 0.1)]) == [false, false, false])
+    }
+
+    @Test func interruptedByOtherKey() {
+        var d = TapDetector(count: 2)
+        d.press(at: 0)
+        let first = d.release(at: 0.1)
+        d.interrupt()
+        d.press(at: 0.3)
+        let second = d.release(at: 0.4)
+        #expect(!first && !second)
+    }
+
+    @Test func regularKeyPresses() {
+        var d = TapDetector(count: 3)
+        let quick = [0, 0.2, 0.4].map { d.keyPress(at: $0) }
+        let slow = [1, 2, 2.2].map { d.keyPress(at: $0) }
+        #expect(quick == [false, false, true])
+        #expect(slow == [false, false, false])
     }
 }
 
@@ -230,5 +277,19 @@ func typeText(_ input: String, category: AppCategory = .other, learned: @escapin
         for _ in 0..<2 { store.vote(key: "b", lang: .en, app: "a", category: .code) }
         let reloaded = LearningStore(url: url)
         #expect(reloaded.verdict(key: "b", app: "a", category: .code) == .lang(.en))
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+    }
+
+    @Test func corruptFileIsKeptAside() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        let backup = url.appendingPathExtension("corrupt")
+        defer { for u in [url, backup] { try? FileManager.default.removeItem(at: u) } }
+        try Data("{ не json".utf8).write(to: url)
+        let store = LearningStore(url: url)
+        #expect(store.entries.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: backup.path))
+        store.vote(key: "b", lang: .en, app: "a", category: .code)
+        #expect(LearningStore(url: url).entries["b"] != nil)
     }
 }

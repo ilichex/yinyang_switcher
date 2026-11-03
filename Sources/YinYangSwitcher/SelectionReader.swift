@@ -22,6 +22,33 @@ enum SelectionReader {
         return .text(text)
     }
 
+    /// Текст перед курсором, `count` символов UTF-16 (или меньше у начала документа).
+    /// nil — программа не говорит (Electron, терминалы) или что-то выделено: проверить нечем.
+    static func textBeforeCursor(_ count: Int) -> String? {
+        let system = AXUIElementCreateSystemWide()
+        // Зависшая программа не должна держать клавиатуру: ждём её не дольше 50 мс.
+        AXUIElementSetMessagingTimeout(system, 0.05)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = focused as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.05)
+        var rangeValue: CFTypeRef?
+        var selection = CFRange()
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
+              let rangeValue, CFGetTypeID(rangeValue) == AXValueGetTypeID(),
+              AXValueGetValue(rangeValue as! AXValue, .cfRange, &selection),
+              selection.length == 0, selection.location >= 0 else { return nil }
+        let start = max(0, selection.location - count)
+        var range = CFRange(location: start, length: selection.location - start)
+        guard let wanted = AXValueCreate(.cfRange, &range) else { return nil }
+        var text: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element, kAXStringForRangeParameterizedAttribute as CFString, wanted, &text
+        ) == .success else { return nil }
+        return text as? String
+    }
+
     /// Копирует через ⌘C и возвращает буфер обмена как был.
     static func viaClipboard(_ completion: @escaping (String?) -> Void) {
         let pasteboard = NSPasteboard.general

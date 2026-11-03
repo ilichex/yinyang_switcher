@@ -6,9 +6,17 @@ final class InputSources {
     private(set) var ru: TISInputSource?
     private(set) var en: TISInputSource?
     private(set) var map: LayoutMap = .macRussian
+    /// Сейчас включена русская или английская раскладка. На любой другой (украинская,
+    /// японская, Dvorak с другим языком) программа молчит: её слова мы не понимаем.
+    private(set) var currentIsSupported = true
 
     init() {
         reload()
+        updateCurrent()
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.updateCurrent() }
     }
 
     func reload() {
@@ -29,6 +37,11 @@ final class InputSources {
     func select(_ lang: Lang) {
         guard let source = lang == .ru ? ru : en else { return }
         TISSelectInputSource(source)
+    }
+
+    private func updateCurrent() {
+        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return }
+        currentIsSupported = ["ru", "en"].contains(Self.primaryLanguage(current))
     }
 
     private static func primaryLanguage(_ source: TISInputSource) -> String? {

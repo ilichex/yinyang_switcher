@@ -24,15 +24,16 @@ fi
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-# Версия: VERSION, иначе последний тег git, иначе как в Info.plist.
-VERSION="${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || true)}"
+# Версия: VERSION, иначе самый новый тег git, иначе как в Info.plist.
+VERSION="${VERSION:-$(git tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1)}"
 VERSION="${VERSION#v}"
 PLIST="$APP/Contents/Info.plist"
 if [ -n "$VERSION" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" -c "Set :CFBundleVersion $VERSION" "$PLIST"
 fi
-# Откуда брать обновления: в GitHub Actions — текущий репозиторий, локально — origin.
-REPO="${GITHUB_REPOSITORY:-$(git remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##' || true)}"
+# Откуда брать обновления — только в сборках GitHub Actions. Локальная сборка не обновляется,
+# иначе через полминуты она заменила бы себя последним релизом.
+REPO="${GITHUB_REPOSITORY:-}"
 if [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
     /usr/libexec/PlistBuddy -c "Add :YYUpdateRepository string $REPO" "$PLIST"
 fi

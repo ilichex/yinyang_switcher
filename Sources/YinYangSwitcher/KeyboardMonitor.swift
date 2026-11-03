@@ -10,16 +10,19 @@ final class KeyboardMonitor {
     var isActive: () -> Bool = { true }
     var onEdit: (TextEdit) -> Void = { _ in }
     var onHotkey: () -> Void = {}
-    var hotkey: Hotkey = .doubleShift
+    var hotkey: Hotkey = .default {
+        didSet { taps = TapDetector(count: hotkey.count) }
+    }
+    /// Пока задано — назначаем клавишу: следующее нажатие отдаётся сюда (код клавиши)
+    /// и в программы не попадает.
+    var onRecord: ((Int) -> Void)?
 
     private var tap: CFMachPort?
-
-    // Короткое «чистое» нажатие модификатора (без других клавиш); для двойных — два подряд.
-    private var hotkeyDownAt: TimeInterval = 0
-    private var hotkeyClean = false
-    private var lastTapUp: TimeInterval = 0
-    private static let tapLength: TimeInterval = 0.3
-    private static let doubleTapGap: TimeInterval = 0.35
+    private var runLoopSource: CFRunLoopSource?
+    private var taps = TapDetector(count: Hotkey.default.count)
+    /// Программа, в которую ушло последнее нажатие.
+    private(set) var lastTarget: Int64 = 0
+    private static let modifierMask: CGEventFlags = [.maskShift, .maskCommand, .maskControl, .maskAlternate]
 
     init(session: TypingSession) {
         self.session = session
@@ -40,9 +43,29 @@ final class KeyboardMonitor {
         ) else { return false }
         self.tap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         return true
+    }
+
+    var isStarted: Bool { tap != nil }
+
+    /// Снимает перехват — например, если доступ отозвали, пока программа работала.
+    func stop() {
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
+        CFMachPortInvalidate(tap)
+        self.tap = nil
+        runLoopSource = nil
+        session.reset()
+        taps.interrupt()
+    }
+
+    /// macOS выключает перехват, если обработчик долго думал; включаем обратно.
+    func ensureEnabled() {
+        if let tap, !CGEvent.tapIsEnabled(tap: tap) { CGEvent.tapEnable(tap: tap, enable: true) }
     }
 
     fileprivate func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -54,8 +77,7 @@ final class KeyboardMonitor {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             // Курсор мог переехать — что «до него», мы больше не знаем.
             session.reset(keepContext: true)
-            hotkeyClean = false
-            lastTapUp = 0
+            taps.interrupt()
             return pass
         case .flagsChanged:
             if !TextInjector.isOurs(event) { handleFlags(event) }
@@ -69,39 +91,54 @@ final class KeyboardMonitor {
     }
 
     private func handleFlags(_ event: CGEvent) {
-        let code = event.getIntegerValueField(.keyboardEventKeycode)
+        let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
-        let now = ProcessInfo.processInfo.systemUptime
-        let others = flags.intersection([.maskShift, .maskCommand, .maskControl, .maskAlternate])
-            .subtracting(hotkey.flag)
-        guard hotkey.keyCodes.contains(Int(code)), others.isEmpty else {
-            hotkeyClean = false
-            lastTapUp = 0
+        if let onRecord {
+            // Модификатор назначаем по нажатию, отпускание пропускаем.
+            if let flag = Hotkey.modifierFlags[code], flags.contains(flag) { onRecord(code) }
             return
         }
-        if flags.contains(hotkey.flag) {
-            if hotkey.isDouble, now - lastTapUp < Self.doubleTapGap {
-                lastTapUp = 0
-                hotkeyClean = false
-                DispatchQueue.main.async { self.onHotkey() }
-                return
-            }
-            hotkeyDownAt = now
-            hotkeyClean = true
-        } else if hotkeyClean, now - hotkeyDownAt < Self.tapLength {
-            hotkeyClean = false
-            if hotkey.isDouble {
-                lastTapUp = now
-            } else {
-                DispatchQueue.main.async { self.onHotkey() }
-            }
+        guard let flag = hotkey.flag, hotkey.keyCodes.contains(code),
+              flags.intersection(Self.modifierMask).subtracting(flag).isEmpty else {
+            taps.interrupt()
+            return
         }
+        let now = ProcessInfo.processInfo.systemUptime
+        if flags.contains(flag) {
+            taps.press(at: now)
+        } else if taps.release(at: now) {
+            DispatchQueue.main.async { self.onHotkey() }
+        }
+    }
+
+    /// F-клавиша из настройки: забираем нажатие себе. true — событие съедено.
+    private func handleFunctionHotkey(_ code: Int, _ event: CGEvent) -> Bool {
+        guard hotkey.flag == nil, hotkey.keyCodes.contains(code), isActive(),
+              event.flags.intersection(Self.modifierMask).isEmpty else { return false }
+        // Автоповтор при удержании — не новое нажатие.
+        if event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
+           taps.keyPress(at: ProcessInfo.processInfo.systemUptime) {
+            DispatchQueue.main.async { self.onHotkey() }
+        }
+        return true
     }
 
     private func handleKey(_ event: CGEvent) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
-        hotkeyClean = false
-        lastTapUp = 0
+        let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        if let onRecord {
+            onRecord(code)
+            return nil
+        }
+        if handleFunctionHotkey(code, event) { return nil }
+        taps.interrupt()
+        // Нажатие пришло в другую программу — всё, что помнили, относится к прошлой.
+        // Уведомление macOS о смене программы приходит позже первых букв, поэтому смотрим здесь.
+        let target = event.getIntegerValueField(.eventTargetUnixProcessID)
+        if target != 0, target != lastTarget {
+            lastTarget = target
+            session.reset()
+        }
 
         guard isActive(), !IsSecureEventInputEnabled() else {
             // Поле пароля или выключено: ничего не запоминаем.
@@ -113,7 +150,7 @@ final class KeyboardMonitor {
             return pass
         }
 
-        switch Int(event.getIntegerValueField(.keyboardEventKeycode)) {
+        switch code {
         case kVK_Delete:
             session.backspace()
             return pass
@@ -141,7 +178,12 @@ final class KeyboardMonitor {
     }
 
     private func boundary(_ separator: Character, _ event: CGEvent) -> Unmanaged<CGEvent>? {
-        guard let edit = session.boundary(separator) else { return Unmanaged.passUnretained(event) }
+        guard let planned = session.boundary(separator) else { return Unmanaged.passUnretained(event) }
+        guard let edit = TextInjector.checked(planned) else {
+            // Текст поменяли без нас — не трогаем и начинаем с чистого листа.
+            session.reset(keepContext: true)
+            return Unmanaged.passUnretained(event)
+        }
         // Разделитель придержали: сначала исправляем слово, потом допечатываем его сами.
         TextInjector.apply(edit)
         if let copy = event.copy() { TextInjector.post(copy) }

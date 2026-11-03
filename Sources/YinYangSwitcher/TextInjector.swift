@@ -9,6 +9,16 @@ enum TextInjector {
     private static let source = CGEventSource(stateID: .privateState)
     private static let backspaceKey: CGKeyCode = 51
 
+    /// Перед курсором то, что мы собираемся стереть? Сверяем, только если правка задевает
+    /// уже законченные слова — их могла поменять автозамена. Программа не отвечает — верим себе.
+    /// nil — на экране другое, править нельзя.
+    static func checked(_ edit: TextEdit) -> TextEdit? {
+        guard edit.maxLag < edit.deleteCount else { return edit }
+        let lag = edit.removed.suffix(edit.maxLag).utf16.count
+        guard let screen = SelectionReader.textBeforeCursor(edit.removed.utf16.count + lag) else { return edit }
+        return edit.adjusted(toScreen: screen)
+    }
+
     static func apply(_ edit: TextEdit) {
         for _ in 0..<edit.deleteCount {
             press(backspaceKey)

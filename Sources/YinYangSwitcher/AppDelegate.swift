@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import ServiceManagement
 import SwitcherCore
 
@@ -14,13 +15,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem!
     private var icon: StatusIcon!
-    private var permissionTimer: Timer?
+    private var healthTimer: Timer?
 
     static let storageURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("YinYang", isDirectory: true)
         .appendingPathComponent("learning.json")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Две копии (из DMG и из «Программ») исправляли бы каждое слово дважды.
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0 != .current }
+        if let running = others.first {
+            running.activate()
+            NSApp.terminate(nil)
+            return
+        }
+
         // Новые значки macOS ставит левее всех, и на MacBook с вырезом в полной строке
         // меню они прячутся под ним. При первом запуске просим место ближе к часам;
         // дальше macOS запоминает, куда пользователь перетащил значок с ⌘.
@@ -46,19 +56,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ) { [unowned self] note in
             context.update(note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
             session.category = context.category
-            session.reset()
         }
 
         monitor.hotkey = context.hotkey
-        monitor.isActive = { [unowned self] in context.isActive }
+        monitor.isActive = { [unowned self] in context.isActive && sources.currentIsSupported }
         monitor.onEdit = { [unowned self] edit in
             if let lang = edit.switchTo { sources.select(lang) }
             icon.spin()
         }
         monitor.onHotkey = { [unowned self] in hotkey() }
 
+        // Первое обращение к словарям macOS долгое (до секунды). Случись оно внутри перехвата,
+        // буквы следующего слова проскочили бы мимо, а правка стёрла бы не то.
+        for word in ["ghbdtn", "руддщ"] { _ = detector.decide(word, context: DetectionContext()) }
+
         startWhenPermitted()
         updater.start()
+    }
+
+    /// Другой свитчер исправлял бы те же слова повторно, и они «прыгали» бы туда-обратно.
+    private static func rivalSwitcher() -> String? {
+        NSWorkspace.shared.runningApplications.lazy.compactMap(\.localizedName)
+            .first { name in ["Punto Switcher", "Caramba"].contains { name.localizedCaseInsensitiveContains($0) } }
     }
 
     /// Расстояние от правого края экрана, точки.
@@ -75,13 +94,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startWhenPermitted() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if AXIsProcessTrustedWithOptions(options), monitor.start() { return }
-        // Ждём, пока пользователь выдаст доступ в Системных настройках.
-        permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [unowned self] timer in
-            if AXIsProcessTrusted(), monitor.start() {
-                timer.invalidate()
-                permissionTimer = nil
-            }
+        _ = AXIsProcessTrustedWithOptions(options)
+        checkHealth()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [unowned self] _ in
+            checkHealth()
+        }
+    }
+
+    /// Раз в 2 секунды: доступ выдали — включаем перехват; macOS его выключила — включаем
+    /// обратно; доступ отозвали — снимаем перехват, чтобы не мешать клавиатуре.
+    private func checkHealth() {
+        if AXIsProcessTrusted() {
+            if monitor.isStarted { monitor.ensureEnabled() } else { monitor.start() }
+        } else if monitor.isStarted {
+            monitor.stop()
         }
     }
 
@@ -92,8 +118,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 3) иначе — инвертировать последнее слово.
     /// Каждое ручное действие — голос в обучение: два раза — и слово запомнено.
     private func hotkey() {
-        guard context.isActive else { return }
-        if let (edit, fix) = session.undoLastFix() {
+        // В поле пароля ничего не печатаем и буфер обмена не трогаем.
+        guard context.isActive, !IsSecureEventInputEnabled() else { return }
+        // С последнего нажатия переключились в другую программу — её текста мы не знаем.
+        if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, Int64(front) != monitor.lastTarget {
+            session.reset()
+        }
+        if let (planned, fix) = session.undoLastFix() {
+            guard let edit = TextInjector.checked(planned) else { return mismatch() }
             TextInjector.apply(edit)
             if let lang = edit.switchTo { sources.select(lang) }
             for change in fix.changes { vote(change.key, change.from) }
@@ -127,12 +159,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func invertLastWord() -> Bool {
-        guard let (edit, change) = session.invertLastWord() else { return false }
+        guard let (planned, change) = session.invertLastWord() else { return false }
+        guard let edit = TextInjector.checked(planned) else {
+            mismatch()
+            return true
+        }
         TextInjector.apply(edit)
         if let lang = edit.switchTo { sources.select(lang) }
         vote(change.key, change.to)
         icon.spin()
         return true
+    }
+
+    /// На экране не то, что мы помним: стирать вслепую нельзя.
+    private func mismatch() {
+        session.reset(keepContext: true)
+        NSSound.beep()
     }
 
     private func vote(_ key: String, _ lang: Lang) {
@@ -145,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         sources.reload()
 
-        let title = NSMenuItem(title: "Инь-Ян \(updater.current) · свитчер раскладки", action: nil, keyEquivalent: "")
+        let title = NSMenuItem(title: "YinYang \(updater.current) · свитчер раскладки", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
         if case .available(let version, _) = updater.state {
@@ -159,6 +201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if !sources.isReady {
             menu.addItem(disabled("⚠️ Включите русскую и английскую раскладки"))
+        }
+        if let rival = Self.rivalSwitcher() {
+            menu.addItem(disabled("⚠️ Запущен \(rival) — выключите один из свитчеров"))
         }
 
         let enabled = item("Исправлять раскладку", #selector(toggleEnabled))
@@ -217,14 +262,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func hotkeyItem() -> NSMenuItem {
-        let root = NSMenuItem(title: "Исправить вручную: \(context.hotkey.shortTitle)", action: nil, keyEquivalent: "")
+        let current = context.hotkey
+        let root = NSMenuItem(title: "Исправить вручную: \(current.title)", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         submenu.addItem(disabled("Клавиша"))
-        for hotkey in Hotkey.allCases {
-            let h = item(hotkey.title, #selector(setHotkey(_:)))
-            h.representedObject = hotkey.rawValue
-            h.state = hotkey == context.hotkey ? .on : .off
-            submenu.addItem(h)
+        var keys = Hotkey.presets
+        if !keys.contains(where: { $0.keyCodes == current.keyCodes }) {
+            keys.append((current.keyTitle, current.keyCodes))
+        }
+        for key in keys {
+            let k = item(key.title, #selector(setHotkeyKey(_:)))
+            k.representedObject = key.keyCodes.sorted()
+            k.state = key.keyCodes == current.keyCodes ? .on : .off
+            submenu.addItem(k)
+        }
+        submenu.addItem(item("Назначить свою…", #selector(recordHotkey)))
+        submenu.addItem(.separator())
+        submenu.addItem(disabled("Нажатие"))
+        for count in Hotkey.counts {
+            let c = item(Hotkey.countTitle(count), #selector(setHotkeyCount(_:)))
+            c.tag = count
+            c.state = count == current.count ? .on : .off
+            submenu.addItem(c)
         }
         submenu.addItem(.separator())
         submenu.addItem(disabled("Что она делает"))
@@ -242,7 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let root = NSMenuItem(title: "Выученные слова (\(Set(rules.map(\.key)).count))", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         if rules.isEmpty {
-            submenu.addItem(disabled("Пока пусто. Исправьте слово двойным ⇧ два раза — и оно запомнится."))
+            submenu.addItem(disabled("Пока пусто. Исправьте слово вручную два раза — и оно запомнится."))
         }
         for rule in rules.prefix(60) {
             let word: String
@@ -297,10 +356,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         session.category = category
     }
 
-    @objc private func setHotkey(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let hotkey = Hotkey(rawValue: raw) else { return }
+    private func setHotkey(_ hotkey: Hotkey) {
         context.hotkey = hotkey
         monitor.hotkey = hotkey
+    }
+
+    @objc private func setHotkeyKey(_ sender: NSMenuItem) {
+        guard let codes = sender.representedObject as? [Int] else { return }
+        setHotkey(Hotkey(keyCodes: Set(codes), count: context.hotkey.count))
+    }
+
+    @objc private func setHotkeyCount(_ sender: NSMenuItem) {
+        setHotkey(Hotkey(keyCodes: context.hotkey.keyCodes, count: sender.tag))
+    }
+
+    /// Ждёт нажатия клавиши и назначает её. Нажатия ловит перехват клавиатуры,
+    /// поэтому без доступа «Универсальный доступ» назначить нельзя.
+    @objc private func recordHotkey() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        guard monitor.isRunning else {
+            alert.messageText = "Сначала выдайте доступ «Универсальный доступ»"
+            alert.runModal()
+            return
+        }
+        alert.messageText = "Нажмите клавишу"
+        alert.informativeText = """
+            Подойдёт модификатор — ⇧ Shift, ⌃ Control, ⌥ Option, ⌘ Command (левый или правый), fn — \
+            или F-клавиша. Буквы и цифры не подходят: они печатают текст.
+
+            Esc — отмена.
+            """
+        alert.addButton(withTitle: "Отмена")
+        monitor.onRecord = { [unowned self] code in
+            if code == kVK_Escape { return NSApp.abortModal() }
+            guard Hotkey.isAllowed(code) else { return NSSound.beep() }
+            setHotkey(Hotkey(keyCodes: [code], count: context.hotkey.count))
+            NSApp.abortModal()
+        }
+        alert.runModal()
+        monitor.onRecord = nil
     }
 
     @objc private func installUpdate() {

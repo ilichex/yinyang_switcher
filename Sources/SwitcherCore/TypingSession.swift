@@ -1,13 +1,53 @@
 import Foundation
 
-/// Что сделать с текстом на экране: стереть `deleteCount` символов и набрать `insert`.
+/// Что сделать с текстом на экране: стереть `removed` (последние символы перед курсором)
+/// и набрать `insert`.
 public struct TextEdit: Equatable {
-    public var deleteCount: Int
+    /// Что, по нашим данным, сейчас стоит перед курсором. Перед правкой сверяемся с экраном:
+    /// автозамена macOS или программа могли поменять текст без нас.
+    public var removed: String
     public var insert: String
     public var switchTo: Lang?
 
-    public init(deleteCount: Int, insert: String, switchTo: Lang? = nil) {
-        self.deleteCount = deleteCount
+    public var deleteCount: Int { removed.count }
+
+    /// Сколько последних символов программа могла ещё не успеть показать: текущее слово
+    /// набрано только что, а уже законченные слова (до последнего разделителя) — давно.
+    public var maxLag: Int {
+        removed.count - ((removed.lastIndex { TypingSession.boundaries.contains($0) })
+            .map { removed.distance(from: removed.startIndex, to: $0) + 1 } ?? 0)
+    }
+
+    /// Сверка с текстом перед курсором (`screen`, с запасом на `maxLag` символов слева).
+    /// nil — текст поменяли без нас (автозамена macOS, подсказки программы), стирать вслепую
+    /// нельзя. Если поменялся только регистр (macOS сделала первую букву заглавной), длина
+    /// та же: правку применяем и переносим заглавные буквы в исправленный текст.
+    public func adjusted(toScreen screen: String) -> TextEdit? {
+        let expected = Array(removed)
+        let shown = Array(screen)
+        for lag in 0...maxLag {
+            let visible = Array(expected.dropLast(lag))
+            guard shown.count >= visible.count else { continue }
+            let actual = Array(shown.suffix(visible.count))
+            guard zip(actual, visible).allSatisfy({ $0.lowercased() == $1.lowercased() }) else { continue }
+            var edit = self
+            edit.removed = String(actual + expected.suffix(lag))
+            if expected.count == insert.count {
+                var letters = Array(insert)
+                for i in actual.indices where actual[i] != visible[i] {
+                    let changed = actual[i].isUppercase ? letters[i].uppercased() : letters[i].lowercased()
+                    // «ß».uppercased() — две буквы; такие оставляем как есть.
+                    if changed.count == 1 { letters[i] = Character(changed) }
+                }
+                edit.insert = String(letters)
+            }
+            return edit
+        }
+        return nil
+    }
+
+    public init(removed: String, insert: String, switchTo: Lang? = nil) {
+        self.removed = removed
         self.insert = insert
         self.switchTo = switchTo
     }
@@ -128,6 +168,8 @@ public final class TypingSession {
             newToken = text
         }
 
+        // Числа и знаки ничего не говорят о языке — отложенные слова ждут следующего слова.
+        if decision.lang == nil, newToken == nil { return nil }
         let resolved = decision.lang.map { lang in pending.filter { $0.lang == lang } } ?? []
         pending.removeAll()
         if let lang = decision.lang { previousLang = lang }
@@ -156,7 +198,7 @@ public final class TypingSession {
             end: chars.count + 1
         )
         let switchTo = newToken != nil ? decision.switchTo : resolved.first?.lang
-        return TextEdit(deleteCount: original.count, insert: rebuilt, switchTo: switchTo)
+        return TextEdit(removed: original, insert: rebuilt, switchTo: switchTo)
     }
 
     /// Отменить последнее исправление (горячая клавиша сразу после замены).
@@ -164,7 +206,7 @@ public final class TypingSession {
         guard let fix = lastFix, fix.end == chars.count else { return nil }
         let tail = String(chars[(fix.start + fix.replaced.count)...])
         let edit = TextEdit(
-            deleteCount: chars.count - fix.start,
+            removed: String(chars[fix.start...]),
             insert: fix.original + tail,
             switchTo: fix.originalLang
         )
@@ -199,6 +241,6 @@ public final class TypingSession {
             kind: .manual, start: start, original: token, replaced: inverted, changes: [change],
             originalLang: typed, end: chars.count
         )
-        return (TextEdit(deleteCount: token.count + tail.count, insert: inverted + tail, switchTo: target), change)
+        return (TextEdit(removed: token + tail, insert: inverted + tail, switchTo: target), change)
     }
 }

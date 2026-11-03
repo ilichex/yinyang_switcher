@@ -40,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          **Установка:** откройте `YinYang.dmg`, перетащите «Инь-Ян» в «Программы» и запустите.
+          **Установка:** откройте `YinYang.dmg`, перетащите YinYang в «Программы» (Applications) и запустите.
           При первом запуске macOS спросит разрешения — один раз:
           1. «Системные настройки → Конфиденциальность и безопасность» → «Всё равно открыть».
           2. «Универсальный доступ» → включите YinYang.
@@ -48,4 +48,4 @@ jobs:
           Дальше приложение обновляется само (меню значка → «Обновления»).
           EOF
           gh release create "$GITHUB_REF_NAME" build/YinYang.dmg build/YinYang.zip \
-            --title "Инь-Ян ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes
+            --title "YinYang ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes

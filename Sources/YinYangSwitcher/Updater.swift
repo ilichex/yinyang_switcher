@@ -42,7 +42,7 @@ final class Updater {
         let app = Bundle.main.bundleURL
         if app.path.contains("/AppTranslocation/") || app.path.hasPrefix("/Volumes/")
             || !FileManager.default.isWritableFile(atPath: app.deletingLastPathComponent().path) {
-            return "Перенесите «Инь-Ян» в «Программы», чтобы он обновлялся"
+            return "Перенесите YinYang в «Программы», чтобы он обновлялся"
         }
         return nil
     }
@@ -86,6 +86,8 @@ final class Updater {
         Task { @MainActor in
             do {
                 let app = try await download(url)
+                // Временную папку убираем при любом исходе; после замены там остаётся старая версия.
+                defer { try? FileManager.default.removeItem(at: app.deletingLastPathComponent()) }
                 try verify(app, expected: version)
                 try replaceSelf(with: app)
                 relaunch()
@@ -103,7 +105,8 @@ final class Updater {
     private func latestRelease(_ repository: String) async throws -> (AppVersion, URL)? {
         // updateHost — только для проверки обновлений на локальном сервере; подпись проверяется всё равно.
         let host = UserDefaults.standard.string(forKey: "updateHost") ?? "https://github.com"
-        var request = URLRequest(url: URL(string: "\(host)/\(repository)/releases/latest")!)
+        guard let latest = URL(string: "\(host)/\(repository)/releases/latest") else { return nil }
+        var request = URLRequest(url: latest)
         request.httpMethod = "HEAD"
         request.setValue("YinYang/\(current)", forHTTPHeaderField: "User-Agent")
         let (_, response) = try await URLSession.shared.data(for: request)
@@ -111,8 +114,10 @@ final class Updater {
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let final = response.url?.path, let range = final.range(of: "/releases/tag/") else { return nil }
         let tag = String(final[range.upperBound...])
-        guard let version = AppVersion(tag) else { return nil }
-        return (version, URL(string: "\(host)/\(repository)/releases/download/\(tag)/\(Self.assetName)")!)
+        guard let version = AppVersion(tag),
+              let asset = URL(string: "\(host)/\(repository)/releases/download/\(tag)/\(Self.assetName)")
+        else { return nil }
+        return (version, asset)
     }
 
     /// Скачивает и распаковывает архив, возвращает путь к YinYang.app внутри.
@@ -121,6 +126,17 @@ final class Updater {
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError("архив не скачался") }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("YinYangUpdate-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let app = dir.appendingPathComponent(Bundle.main.bundleURL.lastPathComponent)
+        do {
+            try unpack(file, into: dir)
+        } catch {
+            try? FileManager.default.removeItem(at: dir)
+            throw error
+        }
+        return app
+    }
+
+    private func unpack(_ file: URL, into dir: URL) throws {
         let zip = dir.appendingPathComponent(Self.assetName)
         try FileManager.default.moveItem(at: file, to: zip)
 
@@ -133,7 +149,6 @@ final class Updater {
         guard ditto.terminationStatus == 0, FileManager.default.fileExists(atPath: app.path) else {
             throw UpdateError("архив повреждён")
         }
-        return app
     }
 
     private func verify(_ app: URL, expected: AppVersion) throws {
