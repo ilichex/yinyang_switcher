@@ -348,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         off.state = current == nil ? .on : .off
         submenu.addItem(off)
         submenu.addItem(.separator())
-        submenu.addItem(disabled("Выключенный YinYang в строке меню перечёркнут"))
+        submenu.addItem(disabled("У выключенного YinYang в строке меню — половина значка"))
         root.submenu = submenu
         return root
     }

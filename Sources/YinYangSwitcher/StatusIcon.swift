@@ -27,7 +27,7 @@ final class StatusIcon {
         button.toolTip = shortcutTitle.map { "\(state) · \($0) — \(action)" } ?? state
     }
 
-    /// Выключен: блёклый инь-ян, перечёркнутый, — видно с первого взгляда.
+    /// Выключен: от инь-яна остаётся одна тёмная половина — видно с первого взгляда.
     var dimmed = false {
         didSet {
             button.layer?.removeAnimation(forKey: "spin")
@@ -74,32 +74,39 @@ enum YinYang {
         return image
     }
 
-    /// Выключенное состояние: инь-ян вполсилы и косая черта поверх, с просветом вокруг неё.
+    /// Выключенное состояние: от инь-яна остаётся одна тёмная половина, сдвинутая к центру.
     static func offImage(size: CGFloat) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            ctx.saveGState()
-            ctx.setAlpha(0.4)
-            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-            ctx.translateBy(x: rect.midX, y: rect.midY)
-            draw(in: ctx, radius: size / 2 - 1.5, dark: .black, light: nil, outline: 1.3)
-            ctx.endTransparencyLayer()
-            ctx.restoreGState()
-
-            let from = CGPoint(x: rect.minX + 2.5, y: rect.maxY - 2.5)
-            let to = CGPoint(x: rect.maxX - 2.5, y: rect.minY + 2.5)
-            ctx.setLineCap(.round)
+            let r = size / 2 - 1.5
+            // Половина занимает по ширине от −r до r/2 — сдвигаем её середину в центр значка.
+            ctx.translateBy(x: rect.midX + r / 4, y: rect.midY)
+            ctx.setFillColor(.black)
+            ctx.addPath(darkHalf(radius: r))
+            ctx.fillPath()
             ctx.setBlendMode(.clear)
-            ctx.setLineWidth(4.4)
-            ctx.strokeLineSegments(between: [from, to])
-            ctx.setBlendMode(.normal)
-            ctx.setStrokeColor(.black)
-            ctx.setLineWidth(1.9)
-            ctx.strokeLineSegments(between: [from, to])
+            ctx.fillEllipse(in: darkHeadDot(radius: r))
             return true
         }
         image.isTemplate = true
         return image
+    }
+
+    /// Тёмная половина: левый полукруг + нижняя «головка» справа − верхняя слева.
+    static func darkHalf(radius r: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: 0, y: r))
+        path.addArc(center: .zero, radius: r, startAngle: .pi / 2, endAngle: 3 * .pi / 2, clockwise: false)
+        path.addArc(center: CGPoint(x: 0, y: -r / 2), radius: r / 2, startAngle: 3 * .pi / 2, endAngle: .pi / 2, clockwise: false)
+        path.addArc(center: CGPoint(x: 0, y: r / 2), radius: r / 2, startAngle: 3 * .pi / 2, endAngle: .pi / 2, clockwise: true)
+        path.closeSubpath()
+        return path
+    }
+
+    /// Светлая точка в тёмной головке.
+    static func darkHeadDot(radius r: CGFloat) -> CGRect {
+        let dot = r / 6.5
+        return CGRect(x: -dot, y: -r / 2 - dot, width: 2 * dot, height: 2 * dot)
     }
 
     /// Рисует инь-ян с центром в начале координат. `light == nil` — светлая половина прозрачная.
@@ -110,20 +117,12 @@ enum YinYang {
             ctx.fillEllipse(in: circle)
         }
 
-        // Тёмная половина: левый полукруг + нижняя «головка» справа − верхняя слева.
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: 0, y: r))
-        path.addArc(center: .zero, radius: r, startAngle: .pi / 2, endAngle: 3 * .pi / 2, clockwise: false)
-        path.addArc(center: CGPoint(x: 0, y: -r / 2), radius: r / 2, startAngle: 3 * .pi / 2, endAngle: .pi / 2, clockwise: false)
-        path.addArc(center: CGPoint(x: 0, y: r / 2), radius: r / 2, startAngle: 3 * .pi / 2, endAngle: .pi / 2, clockwise: true)
-        path.closeSubpath()
         ctx.setFillColor(dark)
-        ctx.addPath(path)
+        ctx.addPath(darkHalf(radius: r))
         ctx.fillPath()
 
         let dot = r / 6.5
-        // Светлая точка в тёмной головке.
-        let darkHead = CGRect(x: -dot, y: -r / 2 - dot, width: 2 * dot, height: 2 * dot)
+        let darkHead = darkHeadDot(radius: r)
         if let light {
             ctx.setFillColor(light)
             ctx.fillEllipse(in: darkHead)
