@@ -3,6 +3,8 @@ import Foundation
 /// Умная инверсия выделенного текста: понятные слова остаются как есть,
 /// меняются только те, что в другой раскладке становятся словами.
 /// Если менять нечего — значит, пользователь хочет инвертировать всё целиком.
+/// `typed` — то же для уже набранной фразы: настоящие слова не трогаем, а если менять
+/// нечего — ничего не делаем (тогда меняется раскладка последнего слова).
 public struct SmartConverter {
     public struct Result: Equatable {
         public var text: String
@@ -20,7 +22,8 @@ public struct SmartConverter {
     public func convert(
         _ text: String,
         category: AppCategory = .other,
-        learned: (String) -> Verdict? = { _ in nil }
+        learned: (String) -> Verdict? = { _ in nil },
+        typed: Bool = false
     ) -> Result? {
         let tokens = Self.split(text)
         var output = tokens.map(\.text)
@@ -30,6 +33,14 @@ public struct SmartConverter {
         var previous: Lang?
 
         for (i, token) in tokens.enumerated() where !token.isSeparator {
+            // Уже набранный текст: настоящие слова остаются как есть, даже если обучение
+            // подсказывает другое, — их только что видели на экране и не исправили.
+            let letters = token.text.trimmingCharacters(in: .punctuationCharacters)
+            if typed, let lang = LayoutMap.detectLang(letters), detector.scorer.score(letters, lang) > 0 {
+                langs[i] = lang
+                previous = lang
+                continue
+            }
             let key = detector.key(for: token.text)
             let context = DetectionContext(previousLang: previous, category: category, learned: learned(key))
             let decision = detector.decide(token.text, context: context)
@@ -62,8 +73,8 @@ public struct SmartConverter {
         }
 
         if changes.isEmpty {
-            // Умно менять нечего — инвертируем всё.
-            guard let lang = LayoutMap.detectLang(text) ?? tokens.lazy.compactMap({ LayoutMap.detectLang($0.text) }).first else {
+            // Умно менять нечего — инвертируем всё (для выделенного) или ничего (для набранного).
+            guard !typed, let lang = LayoutMap.detectLang(text) ?? tokens.lazy.compactMap({ LayoutMap.detectLang($0.text) }).first else {
                 return nil
             }
             var all: [WordChange] = []

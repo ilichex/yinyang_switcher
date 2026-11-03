@@ -82,6 +82,16 @@ public final class TypingSession {
         /// Длина набора сразу после исправления: если пользователь продолжил печатать,
         /// отмена уже не имеет смысла.
         public var end: Int
+        public var replacedLang: Lang? = nil
+        /// Это уже переключение туда-обратно, а не первая отмена: за него не голосуем.
+        public var isRepeat = false
+
+        /// Тот же кусок наоборот: следующее нажатие вернёт его.
+        func flipped(end: Int) -> Fix {
+            Fix(kind: kind, start: start, original: replaced, replaced: original,
+                changes: changes.map { WordChange(key: $0.key, from: $0.to, to: $0.from) },
+                originalLang: replacedLang, end: end, replacedLang: originalLang, isRepeat: true)
+        }
     }
 
     struct Pending {
@@ -195,7 +205,7 @@ public final class TypingSession {
         lastFix = Fix(
             kind: .auto, start: from, original: original, replaced: rebuilt,
             changes: changes, originalLang: typedLang ?? resolved.first?.lang.other,
-            end: chars.count + 1
+            end: chars.count + 1, replacedLang: decision.lang ?? resolved.first?.lang
         )
         let switchTo = newToken != nil ? decision.switchTo : resolved.first?.lang
         return TextEdit(removed: original, insert: rebuilt, switchTo: switchTo)
@@ -211,10 +221,49 @@ public final class TypingSession {
             switchTo: fix.originalLang
         )
         chars.replaceSubrange(fix.start..., with: fix.original + tail)
-        lastFix = nil
+        // Не забываем: следующее нажатие вернёт исправление обратно — и так сколько угодно.
+        lastFix = fix.flipped(end: chars.count)
         pending.removeAll()
         previousLang = fix.originalLang
         return (edit, fix)
+    }
+
+    /// Пользователь заменил выделенный текст. Запоминаем, чтобы следующее нажатие вернуло
+    /// его обратно без повторного выделения. Огромные куски не запоминаем.
+    public func replacedSelection(_ original: String, with replaced: String, changes: [WordChange], lang: Lang?) {
+        reset(keepContext: true)
+        guard replaced.count <= Self.maxSelection else { return }
+        chars = Array(replaced)
+        if let lang { previousLang = lang }
+        lastFix = Fix(kind: .manual, start: 0, original: original, replaced: replaced, changes: changes,
+                      originalLang: Self.lastLang(original), end: chars.count, replacedLang: lang)
+    }
+
+    static let maxSelection = 1000
+
+    /// Исправить всё, что набрано с последнего клика или Enter: меняются только слова,
+    /// похожие на набранные не в той раскладке, понятные остаются. nil — таких слов нет.
+    public func convertPhrase(_ smart: SmartConverter) -> (edit: TextEdit, changes: [WordChange])? {
+        let text = String(chars)
+        guard let result = smart.convert(text, category: category, learned: learned, typed: true),
+              result.text != text else { return nil }
+        let converted = Array(result.text)
+        // Стираем только с первого изменившегося символа.
+        var start = 0
+        while start < min(chars.count, converted.count), chars[start] == converted[start] { start += 1 }
+        let original = String(chars[start...])
+        let replaced = String(converted[start...])
+        chars = converted
+        pending.removeAll()
+        if let lang = result.lang { previousLang = lang }
+        lastFix = Fix(kind: .manual, start: start, original: original, replaced: replaced, changes: result.changes,
+                      originalLang: Self.lastLang(text), end: chars.count, replacedLang: result.lang)
+        return (TextEdit(removed: original, insert: replaced, switchTo: result.lang), result.changes)
+    }
+
+    /// Язык последнего слова с буквами.
+    static func lastLang(_ text: String) -> Lang? {
+        text.split(whereSeparator: \.isWhitespace).reversed().lazy.compactMap { LayoutMap.detectLang(String($0)) }.first
     }
 
     /// Принудительно инвертировать последнее слово (горячая клавиша без выделения).
@@ -239,7 +288,7 @@ public final class TypingSession {
         let change = WordChange(key: detector.key(for: token), from: typed, to: target)
         lastFix = Fix(
             kind: .manual, start: start, original: token, replaced: inverted, changes: [change],
-            originalLang: typed, end: chars.count
+            originalLang: typed, end: chars.count, replacedLang: target
         )
         return (TextEdit(removed: token + tail, insert: inverted + tail, switchTo: target), change)
     }

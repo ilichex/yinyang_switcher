@@ -24,6 +24,22 @@ final class AppContext {
         set { newValue.save(to: defaults) }
     }
 
+    /// Сочетание «включить/выключить»; nil — пользователь его отключил.
+    var toggleShortcut: Shortcut? {
+        get {
+            if defaults.bool(forKey: "toggleOff") { return nil }
+            guard let modifiers = defaults.object(forKey: "toggleModifiers") as? Int else { return .defaultToggle }
+            let shortcut = Shortcut(modifiers: UInt64(modifiers), keyCode: defaults.object(forKey: "toggleKey") as? Int)
+            return shortcut.isAllowed ? shortcut : .defaultToggle
+        }
+        set {
+            defaults.set(newValue == nil, forKey: "toggleOff")
+            guard let newValue else { return }
+            defaults.set(Int(newValue.modifiers), forKey: "toggleModifiers")
+            defaults.set(newValue.keyCode, forKey: "toggleKey")
+        }
+    }
+
     private var customCategories: [String: String] {
         get { defaults.dictionary(forKey: "appCategories") as? [String: String] ?? [:] }
         set { defaults.set(newValue, forKey: "appCategories") }

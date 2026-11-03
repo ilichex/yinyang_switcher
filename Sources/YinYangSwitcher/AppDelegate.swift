@@ -65,6 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             icon.spin()
         }
         monitor.onHotkey = { [unowned self] in hotkey() }
+        // По умолчанию ⌥⌘ — быстро выключить и включить обратно, не открывая меню.
+        monitor.toggle = context.toggleShortcut
+        monitor.onToggle = { [unowned self] in toggleEnabled() }
+        icon.shortcutTitle = context.toggleShortcut?.title
 
         // Первое обращение к словарям macOS долгое (до секунды). Случись оно внутри перехвата,
         // буквы следующего слова проскочили бы мимо, а правка стёрла бы не то.
@@ -113,9 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Клавиша ручного исправления (по умолчанию двойной Shift)
 
-    /// 1) сразу после автозамены — отменить её;
-    /// 2) есть выделение — умно инвертировать выделенное;
-    /// 3) иначе — инвертировать последнее слово.
+    /// 1) только что исправлено (само или вручную) — вернуть как было; следующее нажатие
+    ///    снова исправит, и так сколько угодно, пока вы не продолжили печатать;
+    /// 2) есть выделение — умно исправить выделенное;
+    /// 3) иначе — исправить набранную фразу: только слова, похожие на набранные не в той
+    ///    раскладке; если таких нет — поменять раскладку последнего слова.
     /// Каждое ручное действие — голос в обучение: два раза — и слово запомнено.
     private func hotkey() {
         // В поле пароля ничего не печатаем и буфер обмена не трогаем.
@@ -128,7 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let edit = TextInjector.checked(planned) else { return mismatch() }
             TextInjector.apply(edit)
             if let lang = edit.switchTo { sources.select(lang) }
-            for change in fix.changes { vote(change.key, change.from) }
+            // Голос — только за первую отмену; дальше это просто переключение туда-обратно.
+            if !fix.isRepeat {
+                for change in fix.changes { vote(change.key, change.from) }
+            }
             icon.spin()
             return
         }
@@ -136,11 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .text(let selection) where !selection.isEmpty:
             convertSelection(selection)
         case .text:
-            if !invertLastWord() { NSSound.beep() }
+            if !convertTyped() { NSSound.beep() }
         case .unsupported:
-            // Только что набранное слово важнее: ⌘C без выделения в некоторых
+            // Только что набранное важнее: ⌘C без выделения в некоторых
             // редакторах копирует всю строку.
-            if invertLastWord() { return }
+            if convertTyped() { return }
             SelectionReader.viaClipboard { [self] selection in
                 if let selection { convertSelection(selection) } else { NSSound.beep() }
             }
@@ -154,8 +163,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         TextInjector.type(result.text)
         if let lang = result.lang { sources.select(lang) }
         for change in result.changes { vote(change.key, change.to) }
-        session.reset(keepContext: true)
+        // Запоминаем замену: следующее нажатие вернёт как было, выделять заново не нужно.
+        session.replacedSelection(selection, with: result.text, changes: result.changes, lang: result.lang)
         icon.spin()
+    }
+
+    /// Набранное без выделения: сначала вся фраза, потом последнее слово. false — менять нечего.
+    private func convertTyped() -> Bool {
+        if let (planned, changes) = session.convertPhrase(smart) {
+            guard let edit = TextInjector.checked(planned) else {
+                mismatch()
+                return true
+            }
+            TextInjector.apply(edit)
+            if let lang = edit.switchTo { sources.select(lang) }
+            for change in changes { vote(change.key, change.to) }
+            icon.spin()
+            return true
+        }
+        return invertLastWord()
     }
 
     private func invertLastWord() -> Bool {
@@ -209,12 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let enabled = item("Исправлять раскладку", #selector(toggleEnabled))
         enabled.state = context.enabled ? .on : .off
         menu.addItem(enabled)
+        menu.addItem(toggleItem())
         menu.addItem(hotkeyItem())
         menu.addItem(.separator())
 
         if !context.bundleID.isEmpty {
             menu.addItem(disabled("Сейчас: \(context.appName)"))
-            let categoryItem = NSMenuItem(title: "Тип: \(context.category.title)", action: nil, keyEquivalent: "")
+            let categoryItem = NSMenuItem(title: "Текущий режим: \(context.category.title)", action: nil, keyEquivalent: "")
             let categories = NSMenu()
             for category in AppCategory.allCases {
                 let c = item(category.title, #selector(setCategory(_:)))
@@ -287,11 +314,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         submenu.addItem(.separator())
         submenu.addItem(disabled("Что она делает"))
-        submenu.addItem(disabled("Только что исправилось само — отменяет"))
+        submenu.addItem(disabled("Только что исправлено — возвращает; ещё раз — снова исправляет"))
         submenu.addItem(disabled("Выделен текст — исправляет выделенное"))
-        submenu.addItem(disabled("Иначе — исправляет последнее слово"))
+        submenu.addItem(disabled("Иначе — исправляет набранную фразу или последнее слово"))
         submenu.addItem(.separator())
         submenu.addItem(disabled("Исправите одно слово дважды — оно запомнится"))
+        root.submenu = submenu
+        return root
+    }
+
+    private func toggleItem() -> NSMenuItem {
+        let current = context.toggleShortcut
+        let root = NSMenuItem(title: "Вкл/выкл сочетанием: \(current?.title ?? "не задано")", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        var choices = Shortcut.presets
+        if let current, !choices.contains(where: { $0.shortcut == current }) {
+            choices.append((current.title, current))
+        }
+        for choice in choices {
+            let c = item(choice.title, #selector(setToggleShortcut(_:)))
+            c.representedObject = [Int(choice.shortcut.modifiers), choice.shortcut.keyCode ?? -1]
+            c.state = choice.shortcut == current ? .on : .off
+            submenu.addItem(c)
+        }
+        submenu.addItem(item("Назначить своё…", #selector(recordToggleShortcut)))
+        let off = item("Не использовать", #selector(setToggleShortcut(_:)))
+        off.state = current == nil ? .on : .off
+        submenu.addItem(off)
+        submenu.addItem(.separator())
+        submenu.addItem(disabled("Выключенный YinYang в строке меню перечёркнут"))
         root.submenu = submenu
         return root
     }
@@ -368,6 +419,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func setHotkeyCount(_ sender: NSMenuItem) {
         setHotkey(Hotkey(keyCodes: context.hotkey.keyCodes, count: sender.tag))
+    }
+
+    private func setToggle(_ shortcut: Shortcut?) {
+        context.toggleShortcut = shortcut
+        monitor.toggle = shortcut
+        icon.shortcutTitle = shortcut?.title
+    }
+
+    @objc private func setToggleShortcut(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? [Int], raw.count == 2 else { return setToggle(nil) }
+        setToggle(Shortcut(modifiers: UInt64(raw[0]), keyCode: raw[1] < 0 ? nil : raw[1]))
+    }
+
+    @objc private func recordToggleShortcut() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        guard monitor.isRunning else {
+            alert.messageText = "Сначала выдайте доступ «Универсальный доступ»"
+            alert.runModal()
+            return
+        }
+        alert.messageText = "Нажмите сочетание"
+        alert.informativeText = """
+            Модификаторы вместе — например ⌥⌘ или ⌃⇧ (нажать и отпустить), \
+            или клавиша с ⌘ или ⌃ — например ⌃⌥Y. F-клавиши можно и без модификаторов.
+
+            Esc — отмена.
+            """
+        alert.addButton(withTitle: "Отмена")
+        monitor.onRecordShortcut = { [unowned self] shortcut in
+            guard let shortcut else { return NSApp.abortModal() }
+            guard shortcut.isAllowed else { return NSSound.beep() }
+            setToggle(shortcut)
+            NSApp.abortModal()
+        }
+        alert.runModal()
+        monitor.onRecordShortcut = nil
     }
 
     /// Ждёт нажатия клавиши и назначает её. Нажатия ловит перехват клавиатуры,

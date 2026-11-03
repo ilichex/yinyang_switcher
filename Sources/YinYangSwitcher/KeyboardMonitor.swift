@@ -16,10 +16,21 @@ final class KeyboardMonitor {
     /// Пока задано — назначаем клавишу: следующее нажатие отдаётся сюда (код клавиши)
     /// и в программы не попадает.
     var onRecord: ((Int) -> Void)?
+    /// Сочетание «включить/выключить»; nil — не используется.
+    var toggle: Shortcut? = .defaultToggle {
+        didSet { chord = ChordDetector(target: toggle?.keyCode == nil ? toggle?.modifiers ?? 0 : 0) }
+    }
+    var onToggle: () -> Void = {}
+    /// Пока задано — записываем новое сочетание «включить/выключить». nil в ответ — Esc.
+    var onRecordShortcut: ((Shortcut?) -> Void)? {
+        didSet { recorder = ShortcutRecorder() }
+    }
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var taps = TapDetector(count: Hotkey.default.count)
+    private var chord = ChordDetector(target: Shortcut.defaultToggle.modifiers)
+    private var recorder = ShortcutRecorder()
     /// Программа, в которую ушло последнее нажатие.
     private(set) var lastTarget: Int64 = 0
     private static let modifierMask: CGEventFlags = [.maskShift, .maskCommand, .maskControl, .maskAlternate]
@@ -78,6 +89,7 @@ final class KeyboardMonitor {
             // Курсор мог переехать — что «до него», мы больше не знаем.
             session.reset(keepContext: true)
             taps.interrupt()
+            chord.interrupt()
             return pass
         case .flagsChanged:
             if !TextInjector.isOurs(event) { handleFlags(event) }
@@ -93,10 +105,18 @@ final class KeyboardMonitor {
     private func handleFlags(_ event: CGEvent) {
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
+        let modifiers = flags.rawValue & Shortcut.allModifiers
+        if let onRecordShortcut {
+            if let shortcut = recorder.flags(modifiers) { onRecordShortcut(shortcut) }
+            return
+        }
         if let onRecord {
             // Модификатор назначаем по нажатию, отпускание пропускаем.
             if let flag = Hotkey.modifierFlags[code], flags.contains(flag) { onRecord(code) }
             return
+        }
+        if chord.flags(modifiers, at: ProcessInfo.processInfo.systemUptime) {
+            DispatchQueue.main.async { self.onToggle() }
         }
         guard let flag = hotkey.flag, hotkey.keyCodes.contains(code),
               flags.intersection(Self.modifierMask).subtracting(flag).isEmpty else {
@@ -126,8 +146,21 @@ final class KeyboardMonitor {
     private func handleKey(_ event: CGEvent) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let modifiers = event.flags.rawValue & Shortcut.allModifiers
+        if let onRecordShortcut {
+            onRecordShortcut(code == kVK_Escape && modifiers == 0 ? nil : recorder.key(code, modifiers: modifiers))
+            return nil
+        }
         if let onRecord {
             onRecord(code)
+            return nil
+        }
+        chord.interrupt()
+        if let toggle, toggle.keyCode == code, toggle.modifiers == modifiers {
+            // Автоповтор при удержании — не новое нажатие.
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                DispatchQueue.main.async { self.onToggle() }
+            }
             return nil
         }
         if handleFunctionHotkey(code, event) { return nil }

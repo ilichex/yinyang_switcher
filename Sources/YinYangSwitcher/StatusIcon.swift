@@ -4,6 +4,7 @@ import AppKit
 final class StatusIcon {
     private let button: NSStatusBarButton
     private let frames: [NSImage]
+    private let offImage = YinYang.offImage(size: 18)
     private var timer: Timer?
     private var frame = 0
 
@@ -16,14 +17,31 @@ final class StatusIcon {
             YinYang.image(size: 18, angle: -2 * .pi * CGFloat(i) / CGFloat(Self.frameCount))
         }
         button.image = frames[0]
+        updateTip()
     }
 
-    var dimmed: Bool {
-        get { button.appearsDisabled }
-        set { button.appearsDisabled = newValue }
+    /// Сочетание «включить/выключить» для подсказки, например «⌥⌘».
+    var shortcutTitle: String? {
+        didSet { updateTip() }
+    }
+
+    private func updateTip() {
+        let state = dimmed ? "YinYang выключен" : "YinYang исправляет раскладку"
+        let action = dimmed ? "включить" : "выключить"
+        button.toolTip = shortcutTitle.map { "\(state) · \($0) — \(action)" } ?? state
+    }
+
+    /// Выключен: блёклый инь-ян, перечёркнутый, — видно с первого взгляда.
+    var dimmed = false {
+        didSet {
+            timer?.invalidate()
+            button.image = dimmed ? offImage : frames[0]
+            updateTip()
+        }
     }
 
     func spin() {
+        guard !dimmed else { return }
         timer?.invalidate()
         frame = 0
         let step = Self.duration / Double(Self.frameCount)
@@ -49,6 +67,34 @@ enum YinYang {
             ctx.translateBy(x: rect.midX, y: rect.midY)
             ctx.rotate(by: angle)
             draw(in: ctx, radius: size / 2 - 1.5, dark: .black, light: nil, outline: 1.3)
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    /// Выключенное состояние: инь-ян вполсилы и косая черта поверх, с просветом вокруг неё.
+    static func offImage(size: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.saveGState()
+            ctx.setAlpha(0.4)
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            ctx.translateBy(x: rect.midX, y: rect.midY)
+            draw(in: ctx, radius: size / 2 - 1.5, dark: .black, light: nil, outline: 1.3)
+            ctx.endTransparencyLayer()
+            ctx.restoreGState()
+
+            let from = CGPoint(x: rect.minX + 2.5, y: rect.maxY - 2.5)
+            let to = CGPoint(x: rect.maxX - 2.5, y: rect.minY + 2.5)
+            ctx.setLineCap(.round)
+            ctx.setBlendMode(.clear)
+            ctx.setLineWidth(4.4)
+            ctx.strokeLineSegments(between: [from, to])
+            ctx.setBlendMode(.normal)
+            ctx.setStrokeColor(.black)
+            ctx.setLineWidth(1.9)
+            ctx.strokeLineSegments(between: [from, to])
             return true
         }
         image.isTemplate = true

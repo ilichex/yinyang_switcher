@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import SwitcherCore
 
 /// Клавиша ручного исправления: какая клавиша и сколько раз подряд её нажать.
 ///
@@ -102,5 +103,54 @@ struct Hotkey: Equatable {
         defaults.set(keyCodes.sorted(), forKey: "hotkeyKeys")
         defaults.set(count, forKey: "hotkeyCount")
         defaults.removeObject(forKey: "hotkey")
+    }
+}
+
+// MARK: - Сочетание «включить/выключить»
+
+extension Shortcut {
+    static let presets: [(title: String, shortcut: Shortcut)] = [
+        ("⌥⌘ — нажать вместе и отпустить", .defaultToggle),
+        ("⌃⌥ — нажать вместе и отпустить", Shortcut(modifiers: control | option)),
+        ("⌃⌥Y", Shortcut(modifiers: control | option, keyCode: kVK_ANSI_Y)),
+    ]
+
+    var title: String { modifierSymbols + (keyCode.map(Self.keyName) ?? "") }
+
+    /// Аккорд — от двух модификаторов: один ⌥ или ⇧ жмут постоянно. С клавишей — нужен ⌘ или ⌃,
+    /// иначе сочетание мешало бы печатать (⇧ — заглавные, ⌥ — особые знаки); F-клавиши можно как есть.
+    var isAllowed: Bool {
+        guard let keyCode else { return modifiers.nonzeroBitCount >= 2 }
+        if Hotkey.functionKeys[keyCode] != nil { return true }
+        return keyCode != kVK_Escape && modifiers & (Self.command | Self.control) != 0
+    }
+
+    /// Буква на клавише в латинской раскладке: «Y», а не код 16.
+    static func keyName(_ code: Int) -> String {
+        if let name = Hotkey.functionKeys[code] { return name }
+        switch code {
+        case kVK_Space: return "Пробел"
+        case kVK_Return: return "↩"
+        case kVK_Tab: return "⇥"
+        case kVK_Delete: return "⌫"
+        case kVK_LeftArrow: return "←"
+        case kVK_RightArrow: return "→"
+        case kVK_UpArrow: return "↑"
+        case kVK_DownArrow: return "↓"
+        default: break
+        }
+        guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return "клавиша \(code)" }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+        var deadKeys: UInt32 = 0
+        var chars = [UniChar](repeating: 0, count: 4)
+        var length = 0
+        let status = data.withUnsafeBytes { bytes -> OSStatus in
+            guard let layout = bytes.bindMemory(to: UCKeyboardLayout.self).baseAddress else { return -1 }
+            return UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
+                                  OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeys, chars.count, &length, &chars)
+        }
+        guard status == noErr, length > 0 else { return "клавиша \(code)" }
+        return String(utf16CodeUnits: chars, count: length).uppercased()
     }
 }
