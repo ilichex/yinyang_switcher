@@ -23,6 +23,7 @@ final class Updater {
 
     private static let assetName = "YinYang.zip"
     private static let interval: TimeInterval = 24 * 3600
+    private static let retryDelay: TimeInterval = 30 * 60
 
     var automatic: Bool {
         get { UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true }
@@ -71,6 +72,10 @@ final class Updater {
                 }
             } catch {
                 fail("Не удалось проверить обновления: \(error.localizedDescription)", show: manual)
+                // Сеть бывает нестабильной — не ждём следующих суток.
+                if !manual {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryDelay) { [weak self] in self?.check() }
+                }
             }
         }
     }
