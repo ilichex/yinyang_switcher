@@ -1,22 +1,18 @@
 import AppKit
 
-/// Инь-ян в строке меню. Крутится один оборот, когда раскладка исправлена.
+/// Инь-ян в строке меню. Делает один спокойный оборот, когда раскладка исправлена.
 final class StatusIcon {
     private let button: NSStatusBarButton
-    private let frames: [NSImage]
+    private let image = YinYang.image(size: 18, angle: 0)
     private let offImage = YinYang.offImage(size: 18)
-    private var timer: Timer?
-    private var frame = 0
+    private var spinning = false
 
-    private static let frameCount = 36
-    private static let duration: TimeInterval = 0.6
+    private static let duration: CFTimeInterval = 0.8
 
     init(button: NSStatusBarButton) {
         self.button = button
-        frames = (0..<Self.frameCount).map { i in
-            YinYang.image(size: 18, angle: -2 * .pi * CGFloat(i) / CGFloat(Self.frameCount))
-        }
-        button.image = frames[0]
+        button.wantsLayer = true
+        button.image = image
         updateTip()
     }
 
@@ -34,28 +30,33 @@ final class StatusIcon {
     /// Выключен: блёклый инь-ян, перечёркнутый, — видно с первого взгляда.
     var dimmed = false {
         didSet {
-            timer?.invalidate()
-            button.image = dimmed ? offImage : frames[0]
+            button.layer?.removeAnimation(forKey: "spin")
+            spinning = false
+            button.image = dimmed ? offImage : image
             updateTip()
         }
     }
 
+    /// Один оборот по часовой стрелке. Пока он идёт, новые исправления его не перезапускают:
+    /// при быстрых переключениях подряд значок спокойно докручивается, а не дёргается.
     func spin() {
-        guard !dimmed else { return }
-        timer?.invalidate()
-        frame = 0
-        let step = Self.duration / Double(Self.frameCount)
-        timer = Timer.scheduledTimer(withTimeInterval: step, repeats: true) { [weak self] timer in
-            guard let self else { return timer.invalidate() }
-            frame += 1
-            // Плавное замедление к концу оборота.
-            let t = Double(frame) / Double(Self.frameCount)
-            let eased = 1 - pow(1 - t, 2)
-            let index = min(Int(eased * Double(Self.frameCount)), Self.frameCount - 1)
-            button.image = frames[frame >= Self.frameCount ? 0 : index]
-            if frame >= Self.frameCount { timer.invalidate() }
-        }
-        RunLoop.main.add(timer!, forMode: .common)
+        guard !dimmed, !spinning, let layer = button.layer else { return }
+        spinning = true
+        // Оборот ведёт Core Animation, а не таймер в главном потоке: печать исправления и
+        // смена раскладки занимают главный поток, и покадровая анимация от этого рвалась.
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: button.frame.midX, y: button.frame.midY)
+        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+        rotation.fromValue = 0
+        rotation.toValue = -2 * Double.pi
+        rotation.duration = Self.duration
+        rotation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in self?.spinning = false }
+        layer.add(rotation, forKey: "spin")
+        CATransaction.commit()
+        // Отправить сразу, не дожидаясь конца текущего прохода главного цикла.
+        CATransaction.flush()
     }
 }
 
