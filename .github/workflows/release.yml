@@ -1,0 +1,51 @@
+# Релиз по тегу: git tag v0.2.0 && git push origin v0.2.0
+# Собирает YinYang.dmg (для установки) и YinYang.zip (для автообновления), подписывает
+# сертификатом из секретов SIGNING_P12 и SIGNING_P12_PASSWORD (scripts/make-signing-cert.sh).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Сертификат
+        env:
+          SIGNING_P12_BASE64: ${{ secrets.SIGNING_P12 }}
+        run: |
+          if [ -z "$SIGNING_P12_BASE64" ]; then
+            echo "::error::Нет секрета SIGNING_P12 — без него обновления не встанут (см. README)"
+            exit 1
+          fi
+          echo "$SIGNING_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+
+      - name: Сборка
+        env:
+          SIGNING_P12: ${{ runner.temp }}/signing.p12
+          SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          ./scripts/make-dmg.sh
+          ditto -c -k --keepParent build/YinYang.app build/YinYang.zip
+
+      - name: Релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          **Установка:** откройте `YinYang.dmg`, перетащите «Инь-Ян» в «Программы» и запустите.
+          При первом запуске macOS спросит разрешения — один раз:
+          1. «Системные настройки → Конфиденциальность и безопасность» → «Всё равно открыть».
+          2. «Универсальный доступ» → включите YinYang.
+
+          Дальше приложение обновляется само (меню значка → «Обновления»).
+          EOF
+          gh release create "$GITHUB_REF_NAME" build/YinYang.dmg build/YinYang.zip \
+            --title "Инь-Ян ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes
