@@ -170,6 +170,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Набранное без выделения: сначала вся фраза, потом последнее слово. false — менять нечего.
     private func convertTyped() -> Bool {
+        // Память могла разойтись с экраном (клик в другое место, замена от macOS) — сверяемся,
+        // если программа отвечает. В терминалах и редакторах кода курсор для Accessibility
+        // бывает не там, где ввод, — там верим только памяти.
+        if context.category != .code, let line = SelectionReader.textBeforeCursor(TypingSession.maxLength) {
+            session.sync(withScreen: line)
+        }
         if let (planned, changes) = session.convertPhrase(smart) {
             guard let edit = TextInjector.checked(planned) else {
                 mismatch()

@@ -37,6 +37,13 @@ final class InputSources {
     func select(_ lang: Lang) {
         guard let source = lang == .ru ? ru : en else { return }
         TISSelectInputSource(source)
+        // Изредка macOS не применяет переключение сразу — тогда следующие буквы шли бы
+        // в старой раскладке. Проверяем и повторяем.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                  Self.primaryLanguage(current) != lang.rawValue else { return }
+            TISSelectInputSource(source)
+        }
     }
 
     private func updateCurrent() {

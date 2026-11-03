@@ -307,3 +307,131 @@ import SwitcherCore
         #expect(r?.edit.removed == "мир")
     }
 }
+
+/// Последнее слово можно поменять в любой момент: недописанное, дописанное после
+/// возврата, с двумя пробелами, из букв обеих раскладок.
+@Suite struct LastWordAnytime {
+    /// Клавиатура с раскладкой: клавиши печатают буквы текущей раскладки, клавиша
+    /// исправления переключает её, как в программе. `layoutSwitches: false` — macOS
+    /// не успела переключить раскладку.
+    final class Keyboard {
+        let session = TypingSession(detector: detector)
+        let smart = SmartConverter(detector: detector)
+        var screen = ""
+        var layout = Lang.en
+        var layoutSwitches = true
+
+        /// `keys` — клавиши в латинской раскладке.
+        func press(_ keys: String) {
+            for key in keys {
+                let c = layout == .ru ? map.convert(String(key), to: .ru) : String(key)
+                if let ch = c.first, TypingSession.boundaries.contains(ch) {
+                    if let e = session.boundary(ch) { apply(e) }
+                } else {
+                    session.type(c)
+                }
+                screen += c
+            }
+        }
+
+        @discardableResult
+        func hotkey() -> Bool {
+            if let r = session.undoLastFix() { apply(r.edit); return true }
+            if let r = session.convertPhrase(smart) { apply(r.edit); return true }
+            if let r = session.invertLastWord() { apply(r.edit); return true }
+            return false
+        }
+
+        func apply(_ edit: TextEdit) {
+            #expect(screen.hasSuffix(edit.removed), "стираем [\(edit.removed)], а на экране [\(screen)]")
+            screen.removeLast(min(edit.deleteCount, screen.count))
+            screen += edit.insert
+            if layoutSwitches, let lang = edit.switchTo { layout = lang }
+        }
+    }
+
+    @Test func partialWordBackAndContinue() {
+        let k = Keyboard()
+        k.press("ghbd"); k.hotkey()
+        #expect(k.screen == "прив")
+        k.hotkey()
+        #expect(k.screen == "ghbd")
+        k.press("tn")
+        #expect(k.hotkey())
+        #expect(k.screen == "привет")
+    }
+
+    @Test func partialWordContinuedInNewLayout() {
+        let k = Keyboard()
+        k.press("ghb"); k.hotkey()
+        k.press("dtn ")
+        #expect(k.screen == "привет ")
+    }
+
+    @Test func layoutDidNotSwitchMixedWord() {
+        let k = Keyboard()
+        k.layoutSwitches = false
+        k.press("ghb"); k.hotkey()
+        k.press("dtn")
+        #expect(k.screen == "приdtn")
+        #expect(k.hotkey())
+        #expect(k.screen == "привет")
+    }
+
+    @Test func twoSpacesAfterWord() {
+        let k = Keyboard()
+        k.press("ghbdtn  ")
+        #expect(k.screen == "привет  ")
+        #expect(k.hotkey())
+        #expect(k.screen == "ghbdtn  ")
+        k.hotkey()
+        #expect(k.screen == "привет  ")
+    }
+
+    @Test func manualChoiceIsNotUndoneBySpace() {
+        // Вручную сделали из «привет» английское «ghbdtn» — пробел не возвращает «привет».
+        let k = Keyboard()
+        k.layout = .ru
+        k.press("ghbdtn")
+        #expect(k.screen == "привет")
+        k.hotkey()
+        #expect(k.screen == "ghbdtn")
+        k.press(" ")
+        #expect(k.screen == "ghbdtn ")
+        k.press("ghbdtn ") // следующее слово исправляется как обычно
+        #expect(k.screen == "ghbdtn привет ")
+    }
+
+    @Test func afterClickScreenIsTheTruth() {
+        let session = TypingSession(detector: detector)
+        let smart = SmartConverter(detector: detector)
+        session.reset() // кликнули мышью — память пуста
+        session.sync(withScreen: "старая строка\nмы идем в rbyj")
+        let r = session.convertPhrase(smart)
+        #expect(r?.edit.removed == "rbyj")
+        #expect(r?.edit.insert == "кино")
+    }
+
+    @Test func macOSPeriodAfterTwoSpaces() {
+        // Память «привет  », а macOS заменила два пробела на «. ».
+        let session = TypingSession(detector: detector)
+        session.type("привет  ")
+        session.sync(withScreen: "привет. ")
+        let r = session.invertLastWord()
+        #expect(r?.edit.removed == "привет. ")
+        #expect(r?.edit.insert == "ghbdtn. ")
+    }
+
+    @Test func trailingKeysThatAreLetters() {
+        let session = TypingSession(detector: detector)
+        session.type("k.,k.")
+        #expect(session.invertLastWord()?.edit.insert == "люблю")
+    }
+
+    @Test func consistentMemoryIsKept() {
+        let session = TypingSession(detector: detector)
+        session.type("rbyj")
+        session.sync(withScreen: "Мы идем в rbyj") // память — хвост экрана: не трогаем
+        #expect(session.text == "rbyj")
+    }
+}

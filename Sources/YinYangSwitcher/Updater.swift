@@ -48,6 +48,7 @@ final class Updater {
     }
 
     func start() {
+        Self.removeLeftovers()
         guard unavailableReason == nil else { return }
         // Не мешаем запуску: первая проверка — через полминуты.
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.check() }
@@ -86,14 +87,26 @@ final class Updater {
         Task { @MainActor in
             do {
                 let app = try await download(url)
-                // Временную папку убираем при любом исходе; после замены там остаётся старая версия.
-                defer { try? FileManager.default.removeItem(at: app.deletingLastPathComponent()) }
+                // Временную папку убираем при любом исходе — и до перезапуска: после него
+                // эта копия программы уже ничего не успеет.
+                let folder = app.deletingLastPathComponent()
+                defer { try? FileManager.default.removeItem(at: folder) }
                 try verify(app, expected: version)
                 try replaceSelf(with: app)
+                try? FileManager.default.removeItem(at: folder)
                 relaunch()
             } catch {
                 fail("Не удалось обновиться до \(version): \(error.localizedDescription)", show: true)
             }
+        }
+    }
+
+    /// Папки прошлых обновлений, если программа завершилась, не успев их убрать.
+    private static func removeLeftovers() {
+        let temp = FileManager.default.temporaryDirectory
+        let items = (try? FileManager.default.contentsOfDirectory(atPath: temp.path)) ?? []
+        for name in items where name.hasPrefix("YinYangUpdate-") {
+            try? FileManager.default.removeItem(at: temp.appendingPathComponent(name))
         }
     }
 

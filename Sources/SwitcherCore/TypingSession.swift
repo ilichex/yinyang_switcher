@@ -111,9 +111,12 @@ public final class TypingSession {
     public private(set) var lastFix: Fix?
     public private(set) var previousLang: Lang?
     var pending: [Pending] = []
+    /// Конец текста, который пользователь только что выбрал вручную. Слово, задевающее его,
+    /// автозамена на ближайшем пробеле не трогает: ручной выбор важнее догадки.
+    var manualEnd: Int?
 
     public static let boundaries: Set<Character> = [" ", "\n", "\t"]
-    static let maxLength = 300
+    public static let maxLength = 300
 
     public init(detector: Detector) {
         self.detector = detector
@@ -125,6 +128,7 @@ public final class TypingSession {
         chars.removeAll(keepingCapacity: true)
         pending.removeAll()
         lastFix = nil
+        manualEnd = nil
         if !keepContext { previousLang = nil }
     }
 
@@ -138,6 +142,7 @@ public final class TypingSession {
         chars.removeLast()
         lastFix = nil
         pending.removeAll { $0.end > chars.count }
+        manualEnd = manualEnd.map { min($0, chars.count) }
     }
 
     var wordStart: Int {
@@ -160,6 +165,12 @@ public final class TypingSession {
         let start = wordStart
         let token = String(chars[start...])
         guard !token.isEmpty else { return nil }
+        if let manualEnd, manualEnd > start {
+            // Слово выбрано вручную (может, дописано) — оставляем как есть.
+            pending.removeAll()
+            if let lang = LayoutMap.detectLang(token) { previousLang = lang }
+            return nil
+        }
 
         let key = detector.key(for: token)
         let context = DetectionContext(previousLang: previousLang, category: category, learned: learned(key))
@@ -223,6 +234,7 @@ public final class TypingSession {
         chars.replaceSubrange(fix.start..., with: fix.original + tail)
         // Не забываем: следующее нажатие вернёт исправление обратно — и так сколько угодно.
         lastFix = fix.flipped(end: chars.count)
+        manualEnd = chars.count
         pending.removeAll()
         previousLang = fix.originalLang
         return (edit, fix)
@@ -237,6 +249,17 @@ public final class TypingSession {
         if let lang { previousLang = lang }
         lastFix = Fix(kind: .manual, start: 0, original: original, replaced: replaced, changes: changes,
                       originalLang: Self.lastLang(original), end: chars.count, replacedLang: lang)
+        manualEnd = chars.count
+    }
+
+    /// Сверить память с текстом перед курсором (строка до курсора, как её видит программа).
+    /// Совпадает — оставляем: там больше сведений. Нет (кликнули в другое место, macOS что-то
+    /// заменила) — верим экрану: так последнее слово можно поменять в любой момент.
+    public func sync(withScreen line: String) {
+        let line = String(line.split(separator: "\n", omittingEmptySubsequences: false).last ?? "").suffix(Self.maxLength)
+        if !chars.isEmpty, line.lowercased().hasSuffix(text.lowercased()) { return }
+        reset(keepContext: true)
+        chars = Array(line)
     }
 
     static let maxSelection = 1000
@@ -258,6 +281,7 @@ public final class TypingSession {
         if let lang = result.lang { previousLang = lang }
         lastFix = Fix(kind: .manual, start: start, original: original, replaced: replaced, changes: result.changes,
                       originalLang: Self.lastLang(text), end: chars.count, replacedLang: result.lang)
+        manualEnd = chars.count
         return (TextEdit(removed: original, insert: replaced, switchTo: result.lang), result.changes)
     }
 
@@ -266,30 +290,60 @@ public final class TypingSession {
         text.split(whereSeparator: \.isWhitespace).reversed().lazy.compactMap { LayoutMap.detectLang(String($0)) }.first
     }
 
-    /// Принудительно инвертировать последнее слово (горячая клавиша без выделения).
+    /// Принудительно поменять раскладку последнего слова (клавиша без выделения).
+    /// Слово может быть недописанным, с пробелами после него или из букв обеих раскладок.
     public func invertLastWord() -> (edit: TextEdit, change: WordChange)? {
         var end = chars.count
-        var tail = ""
-        // Слово уже закончено пробелом — берём его.
-        if end > 0, chars[end - 1] == " " {
-            tail = " "
-            end -= 1
-        }
+        // Пробелы после слова (один, два — неважно) остаются как есть.
+        while end > 0, chars[end - 1] == " " { end -= 1 }
+        let tail = String(chars[end...])
         let start = (chars[..<end].lastIndex(where: { Self.boundaries.contains($0) }) ?? -1) + 1
         guard start < end else { return nil }
         let token = String(chars[start..<end])
-        guard let typed = LayoutMap.detectLang(token) else { return nil }
-        let target = typed.other
-        let inverted = detector.map.convert(token, to: target)
+        guard let (inverted, target) = invert(token) else { return nil }
 
         chars.replaceSubrange(start..., with: inverted + tail)
         pending.removeAll()
         previousLang = target
-        let change = WordChange(key: detector.key(for: token), from: typed, to: target)
+        manualEnd = chars.count
+        let change = WordChange(key: detector.key(for: token), from: target.other, to: target)
         lastFix = Fix(
             kind: .manual, start: start, original: token, replaced: inverted, changes: [change],
-            originalLang: typed, end: chars.count, replacedLang: target
+            originalLang: LayoutMap.detectLang(token) ?? target.other, end: chars.count, replacedLang: target
         )
         return (TextEdit(removed: token + tail, insert: inverted + tail, switchTo: target), change)
+    }
+
+    /// Слово в другой раскладке и её язык. Смешанное («приdtn» — раскладка не успела
+    /// переключиться) целиком приводим к одной: где получается слово, иначе — к той,
+    /// которой слово начинается. Знак в конце оставляем знаком, если без него слово
+    /// настоящее, а с ним — нет: «ghbdtn.» → «привет.», «привет.» → «ghbdtn.»,
+    /// но «k.,k.» → «люблю».
+    func invert(_ token: String) -> (String, Lang)? {
+        let target: Lang
+        if let typed = LayoutMap.detectLang(token) {
+            target = typed.other
+        } else {
+            let letters = token.unicodeScalars.compactMap { LayoutMap.detectLang(String($0)) }
+            guard let first = letters.first else { return nil }
+            if isWord(detector.map.convert(token, to: .ru), .ru) { target = .ru }
+            else if isWord(detector.map.convert(token, to: .en), .en) { target = .en }
+            else { target = first }
+        }
+        let full = detector.map.convert(token, to: target)
+        let marks = token.reversed().prefix { ".,!?:;".contains($0) }.count
+        if marks > 0, marks < token.count, !isWord(full, target) {
+            let core = String(token.dropLast(marks))
+            let kept = detector.map.convert(core, to: target)
+            let source = LayoutMap.detectLang(token)
+            if isWord(kept, target) || source.map({ isWord(core, $0) }) == true {
+                return (kept + token.suffix(marks), target)
+            }
+        }
+        return (full, target)
+    }
+
+    private func isWord(_ text: String, _ lang: Lang) -> Bool {
+        detector.scorer.score(text.trimmingCharacters(in: .punctuationCharacters), lang) > 0
     }
 }
