@@ -74,13 +74,13 @@ enum YinYang {
         return image
     }
 
-    /// Выключенное состояние: от инь-яна остаётся одна тёмная половина, сдвинутая к центру.
+    /// Выключенное состояние: от инь-яна остаётся одна тёмная половина — на том же месте,
+    /// что и в целом значке, будто светлая просто исчезла.
     static func offImage(size: CGFloat) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             let r = size / 2 - 1.5
-            // Половина занимает по ширине от −r до r/2 — сдвигаем её середину в центр значка.
-            ctx.translateBy(x: rect.midX + r / 4, y: rect.midY)
+            ctx.translateBy(x: rect.midX, y: rect.midY)
             ctx.setFillColor(.black)
             ctx.addPath(darkHalf(radius: r))
             ctx.fillPath()

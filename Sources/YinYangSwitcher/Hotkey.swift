@@ -13,7 +13,8 @@ struct Hotkey: Equatable {
     /// 1, 2 или 3.
     var count: Int
 
-    static let `default` = Hotkey(keyCodes: [kVK_Shift, kVK_RightShift], count: 2)
+    /// Одно нажатие ⌥ — самое быстрое; ⌥ с буквой (особые знаки) и ⌥⌘ нажатием не считаются.
+    static let `default` = Hotkey(keyCodes: [kVK_Option, kVK_RightOption], count: 1)
     static let counts = 1...3
 
     static let presets: [(title: String, keyCodes: Set<Int>)] = [
