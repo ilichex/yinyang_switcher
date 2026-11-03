@@ -92,30 +92,22 @@ final class Updater {
 
     // MARK: - Шаги
 
-    private struct Release: Decodable {
-        struct Asset: Decodable {
-            let name: String
-            let browserDownloadUrl: URL
-        }
-        let tagName: String
-        let assets: [Asset]
-    }
-
+    /// Без API GitHub: api.github.com блокируют некоторые провайдеры, а github.com — нет.
+    /// github.com/<repo>/releases/latest перенаправляет на …/releases/tag/<тег>, а файл
+    /// релиза лежит по постоянному адресу …/releases/download/<тег>/YinYang.zip.
     private func latestRelease(_ repository: String) async throws -> (AppVersion, URL)? {
-        // updateAPI — только для проверки обновлений на локальном сервере; подпись проверяется всё равно.
-        let api = UserDefaults.standard.string(forKey: "updateAPI") ?? "https://api.github.com"
-        var request = URLRequest(url: URL(string: "\(api)/repos/\(repository)/releases/latest")!)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        // updateHost — только для проверки обновлений на локальном сервере; подпись проверяется всё равно.
+        let host = UserDefaults.standard.string(forKey: "updateHost") ?? "https://github.com"
+        var request = URLRequest(url: URL(string: "\(host)/\(repository)/releases/latest")!)
+        request.httpMethod = "HEAD"
         request.setValue("YinYang/\(current)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        // 404 — релизов ещё нет.
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let release = try decoder.decode(Release.self, from: data)
-        guard let version = AppVersion(release.tagName),
-              let asset = release.assets.first(where: { $0.name == Self.assetName }) else { return nil }
-        return (version, asset.browserDownloadUrl)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        // Релизов ещё нет — GitHub оставляет на странице релизов, без /tag/.
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let final = response.url?.path, let range = final.range(of: "/releases/tag/") else { return nil }
+        let tag = String(final[range.upperBound...])
+        guard let version = AppVersion(tag) else { return nil }
+        return (version, URL(string: "\(host)/\(repository)/releases/download/\(tag)/\(Self.assetName)")!)
     }
 
     /// Скачивает и распаковывает архив, возвращает путь к YinYang.app внутри.
