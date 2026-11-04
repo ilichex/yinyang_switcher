@@ -185,7 +185,13 @@ final class KeyboardMonitor {
 
         switch code {
         case kVK_Delete:
-            session.backspace()
+            // ⌥⌫ стирает слово целиком, а где у слова граница — решает программа.
+            // Стирать из памяти одну букву нельзя: остаток потом исправится вместе с новым словом.
+            if event.flags.contains(.maskAlternate) {
+                session.reset(keepContext: true)
+            } else {
+                session.backspace()
+            }
             return pass
         case kVK_Space:
             return boundary(" ", event)
