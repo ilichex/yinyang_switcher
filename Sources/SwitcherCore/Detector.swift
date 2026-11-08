@@ -72,20 +72,29 @@ public struct Detector {
         let other = typed.other
         let inverted = map.convert(token, to: other)
 
+        let keepScore = scorer.score(Self.core(token), typed)
+        let invertedScore = scorer.score(Self.core(inverted), other)
+
         switch context.learned {
         case .unstable?: return .keep(typed)
         case .lang(let lang)? where lang == typed: return .keep(typed)
-        case .lang?: return Decision(action: .replace(inverted), lang: other, switchTo: other)
+        // Обучение подсказывает, как быть с непонятным словом, но не портит настоящее:
+        // «это» не станет «'nj», сколько бы голосов ни набрал этот набор клавиш.
+        case .lang? where keepScore > invertedScore: return .keep(typed)
+        case .lang?:
+            // Знак на конце остаётся знаком: выученное «ntcn,» — это «тест,», а не «тестб».
+            if invertedScore == 0, let mark = punctuationCandidate(token, typed: typed), mark.lang == other {
+                return Decision(action: .replace(mark.text), lang: other, switchTo: other)
+            }
+            return Decision(action: .replace(inverted), lang: other, switchTo: other)
         case nil: break
         }
 
-        let keepScore = scorer.score(Self.core(token), typed)
         // Частое слово в своей раскладке не трогаем никогда («ой» не станет «jq»).
         if keepScore >= Scorer.commonWord { return .keep(typed) }
 
         var best: (text: String, lang: Lang, switchTo: Lang?, full: Bool)?
 
-        let invertedScore = scorer.score(Self.core(inverted), other)
         if invertedScore >= Scorer.knownWord,
            invertedScore > keepScore || (invertedScore == keepScore && context.previousLang == other) {
             best = (inverted, other, other, true)

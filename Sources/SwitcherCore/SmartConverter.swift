@@ -11,6 +11,12 @@ public struct SmartConverter {
         public var changes: [WordChange]
         /// На какую раскладку переключиться после замены.
         public var lang: Lang?
+
+        /// Чему это учит. Замена целого текста — не мнение о каждом его слове: иначе
+        /// одно нажатие на выделенном абзаце записало бы «и», «в», «это» в английские.
+        public var votes: [WordChange] {
+            text.contains(where: \.isWhitespace) ? [] : changes
+        }
     }
 
     let detector: Detector

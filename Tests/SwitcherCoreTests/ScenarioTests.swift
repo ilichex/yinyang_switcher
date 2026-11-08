@@ -435,3 +435,134 @@ import SwitcherCore
         #expect(session.text == "rbyj")
     }
 }
+
+/// Выделили текст целиком и нажали клавишу: обучение от этого портиться не должно.
+@Suite struct MassSelection {
+    @Test func learningDoesNotBreakRealWords() {
+        #expect(decide("это", learned: .lang(.en)) == .keep)
+        #expect(decide("и", learned: .lang(.en)) == .keep)
+        #expect(decide("бы", learned: .lang(.en)) == .keep)
+    }
+
+    @Test func learningStillFixesNonWords() {
+        #expect(decide("xnj", learned: .lang(.ru)) == .replace("что"))
+    }
+
+    @Test func poisonedLearningDoesNotMixText() {
+        let smart = SmartConverter(detector: detector)
+        let result = smart.convert("это мне она", learned: { _ in .lang(.en) })
+        #expect(result?.text == "'nj vyt jyf") // меняется целиком, а не через слово
+    }
+
+    @Test func wholeTextTeachesNothing() {
+        let smart = SmartConverter(detector: detector)
+        #expect(smart.convert("это мне она")?.votes == [])
+        #expect(smart.convert("ghbdtn rfr ltkf")?.votes == [])
+    }
+
+    @Test func singleSelectedWordStillTeaches() {
+        let smart = SmartConverter(detector: detector)
+        #expect(smart.convert("ghbdtn")?.votes.map(\.key) == ["ghbdtn"])
+    }
+}
+
+@Suite struct LearnedMarks {
+    @Test func learnedWordKeepsItsMark() {
+        #expect(decide("ghbdtn.", learned: .lang(.ru)) == .replace("привет."))
+        #expect(decide("ghbdtn.", learned: .lang(.ru)) == .replace("привет."))
+    }
+
+    @Test func lettersOnPunctuationKeysStayLetters() {
+        #expect(decide("k.,k.", learned: .lang(.ru)) == .replace("люблю"))
+    }
+}
+
+/// Первое слово после потери курсора может оказаться хвостом другого слова.
+@Suite struct HiddenWordStart {
+    private func typed(_ word: String, after prepare: (TypingSession) -> Void,
+                       learned: Verdict? = nil, screen: Bool? = nil) -> TextEdit? {
+        let session = TypingSession(detector: detector)
+        session.learned = { _ in learned }
+        session.letterBefore = { _ in screen }
+        prepare(session)
+        session.type(word)
+        return session.boundary(" ")
+    }
+
+    @Test func tailAfterArrowsIsLeftAlone() {
+        #expect(typed("xnj", after: { $0.cursorMoved() }) == nil)
+        #expect(typed("d", after: { $0.cursorMoved() }, learned: .lang(.ru)) == nil)
+    }
+
+    @Test func arrowsAtWordStartStillFix() {
+        #expect(typed("ghbdtn", after: { $0.cursorMoved() }, screen: false)?.insert == "привет")
+    }
+
+    @Test func clickFixesUnlessInsideWord() {
+        #expect(typed("ghbdtn", after: { $0.clicked() })?.insert == "привет")
+        #expect(typed("ghbdtn", after: { $0.clicked() }, screen: true) == nil)
+    }
+
+    @Test func shortcutMattersOnlyMidWord() {
+        #expect(typed("xnj", after: { $0.type("при"); $0.interrupted() }) == nil)
+        #expect(typed("ghbdtn", after: { $0.type("тест"); _ = $0.boundary(" "); $0.interrupted() })?.insert == "привет")
+    }
+
+    @Test func erasingUnseenTextHidesTheStart() {
+        #expect(typed("xnj", after: { $0.backspace() }) == nil)
+    }
+
+    @Test func onlyTheFirstWordIsSuspect() {
+        let session = TypingSession(detector: detector)
+        session.cursorMoved()
+        session.type("xnj")
+        #expect(session.boundary(" ") == nil)
+        session.type("ghbdtn")
+        #expect(session.boundary(" ")?.insert == "привет")
+    }
+
+    @Test func tailTeachesNothing() {
+        let session = TypingSession(detector: detector)
+        session.cursorMoved()
+        session.type("xnj")
+        #expect(session.invertLastWord() != nil)
+        #expect(session.lastWordTeaches == false)
+        #expect(session.lastFix?.changes == [])
+    }
+
+    @Test func screenCheck() {
+        #expect(TypingSession.letterBefore("nj", inScreen: "эnj") == true)
+        #expect(TypingSession.letterBefore("nj", inScreen: "тест nj") == false)
+        #expect(TypingSession.letterBefore("nj", inScreen: "nj") == false)
+        #expect(TypingSession.letterBefore("nj", inScreen: "тест n") == nil)
+    }
+}
+
+/// macOS заменяет кавычки на типографские — это не повод забывать про замену.
+@Suite struct SmartQuotes {
+    @Test func undoSurvivesReplacedQuote() {
+        let edit = TextEdit(removed: "\"nj vyt", insert: "Это мне").adjusted(toScreen: "«nj vyt")
+        #expect(edit?.removed == "«nj vyt")
+        #expect(edit?.insert == "Это мне")
+    }
+
+    @Test func apostropheToo() {
+        #expect(TextEdit(removed: "'nj vyt", insert: "это мне").adjusted(toScreen: "‘nj vyt")?.insert == "это мне")
+    }
+
+    @Test func otherTextStillStops() {
+        #expect(TextEdit(removed: "\"nj vyt", insert: "Это мне").adjusted(toScreen: "xnj vyt") == nil)
+    }
+
+    @Test func caseFromScreenStillCarries() {
+        #expect(TextEdit(removed: "ghbdtn vbh", insert: "привет мир").adjusted(toScreen: "Ghbdtn vbh")?.insert == "Привет мир")
+    }
+
+    @Test func secondPressReturnsText() {
+        let session = TypingSession(detector: detector)
+        session.replacedSelection("Это мне", with: "\"nj vyt", changes: [], lang: .en)
+        session.sync(withScreen: "«nj vyt")
+        #expect(session.lastFix != nil)
+        #expect(session.undoLastFix()?.edit.adjusted(toScreen: "«nj vyt")?.insert == "Это мне")
+    }
+}

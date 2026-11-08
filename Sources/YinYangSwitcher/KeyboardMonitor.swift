@@ -87,7 +87,7 @@ final class KeyboardMonitor {
             return pass
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             // Курсор мог переехать — что «до него», мы больше не знаем.
-            session.reset(keepContext: true)
+            session.clicked()
             taps.interrupt()
             chord.interrupt()
             return pass
@@ -179,7 +179,7 @@ final class KeyboardMonitor {
             return pass
         }
         if !event.flags.intersection([.maskCommand, .maskControl]).isEmpty {
-            session.reset(keepContext: true)
+            session.interrupted()
             return pass
         }
 
@@ -199,9 +199,12 @@ final class KeyboardMonitor {
             return boundary("\n", event)
         case kVK_Tab:
             return boundary("\t", event)
-        case kVK_Escape, kVK_ForwardDelete, kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown,
+        case kVK_Escape, kVK_ForwardDelete:
+            session.interrupted()
+            return pass
+        case kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown,
              kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow:
-            session.reset(keepContext: true)
+            session.cursorMoved()
             return pass
         default:
             var length = 0
@@ -211,7 +214,7 @@ final class KeyboardMonitor {
             let printable = !text.isEmpty && !text.unicodeScalars.contains {
                 $0.value < 0x20 || (0xF700...0xF8FF).contains($0.value) // управляющие и F-клавиши
             }
-            if printable { session.type(text) } else { session.reset(keepContext: true) }
+            if printable { session.type(text) } else { session.interrupted() }
             return pass
         }
     }

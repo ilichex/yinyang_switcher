@@ -65,6 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             icon.spin()
         }
         monitor.onHotkey = { [unowned self] in hotkey() }
+        // В терминалах и редакторах кода курсор для Accessibility бывает не там, где ввод.
+        session.letterBefore = { [unowned self] token in
+            guard context.category != .code,
+                  let screen = SelectionReader.textBeforeCursor(token.utf16.count + 1) else { return nil }
+            return TypingSession.letterBefore(token, inScreen: screen)
+        }
         // По умолчанию ⌥⌘ — быстро выключить и включить обратно, не открывая меню.
         monitor.toggle = context.toggleShortcut
         monitor.onToggle = { [unowned self] in toggleEnabled() }
@@ -162,9 +168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         TextInjector.type(result.text)
         if let lang = result.lang { sources.select(lang) }
-        for change in result.changes { vote(change.key, change.to) }
+        for change in result.votes { vote(change.key, change.to) }
         // Запоминаем замену: следующее нажатие вернёт как было, выделять заново не нужно.
-        session.replacedSelection(selection, with: result.text, changes: result.changes, lang: result.lang)
+        session.replacedSelection(selection, with: result.text, changes: result.votes, lang: result.lang)
         icon.spin()
     }
 
@@ -198,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         TextInjector.apply(edit)
         if let lang = edit.switchTo { sources.select(lang) }
-        vote(change.key, change.to)
+        if session.lastWordTeaches { vote(change.key, change.to) }
         icon.spin()
         return true
     }

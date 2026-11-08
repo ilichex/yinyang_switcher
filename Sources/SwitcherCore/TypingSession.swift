@@ -29,12 +29,12 @@ public struct TextEdit: Equatable {
             let visible = Array(expected.dropLast(lag))
             guard shown.count >= visible.count else { continue }
             let actual = Array(shown.suffix(visible.count))
-            guard zip(actual, visible).allSatisfy({ $0.lowercased() == $1.lowercased() }) else { continue }
+            guard zip(actual, visible).allSatisfy({ Self.sameOnScreen($0, $1) }) else { continue }
             var edit = self
             edit.removed = String(actual + expected.suffix(lag))
             if expected.count == insert.count {
                 var letters = Array(insert)
-                for i in actual.indices where actual[i] != visible[i] {
+                for i in actual.indices where actual[i] != visible[i] && actual[i].isLetter {
                     let changed = actual[i].isUppercase ? letters[i].uppercased() : letters[i].lowercased()
                     // «ß».uppercased() — две буквы; такие оставляем как есть.
                     if changed.count == 1 { letters[i] = Character(changed) }
@@ -50,6 +50,18 @@ public struct TextEdit: Equatable {
         self.removed = removed
         self.insert = insert
         self.switchTo = switchTo
+    }
+
+    /// Один и тот же символ с поправкой на то, что программа могла с ним сделать:
+    /// поменять регистр или заменить кавычку на типографскую (`"` → `«`, `'` → `’`).
+    static func sameOnScreen(_ a: Character, _ b: Character) -> Bool {
+        a.lowercased() == b.lowercased() || (quoteFamily(a) != nil && quoteFamily(a) == quoteFamily(b))
+    }
+
+    private static func quoteFamily(_ c: Character) -> Int? {
+        if "\"«»“”„".contains(c) { return 2 }
+        if "'‘’‚".contains(c) { return 1 }
+        return nil
     }
 }
 
@@ -102,10 +114,18 @@ public final class TypingSession {
         var key: String
     }
 
+    /// Как курсор оказался там, где начался набор, если мы этого не видели.
+    enum Jump { case click, keys }
+
     public let detector: Detector
     public var category: AppCategory = .other
     /// Выученное правило для ключа слова в текущем приложении.
     public var learned: (String) -> Verdict? = { _ in nil }
+    /// Стоит ли на экране буква вплотную перед этим словом. nil — программа не отвечает.
+    public var letterBefore: (String) -> Bool? = { _ in nil }
+    /// Набор начался после того, как мы потеряли курсор: первое слово может быть хвостом
+    /// другого слова, и исправлять его отдельно нельзя.
+    var jump: Jump?
 
     public private(set) var chars: [Character] = []
     public private(set) var lastFix: Fix?
@@ -129,7 +149,28 @@ public final class TypingSession {
         pending.removeAll()
         lastFix = nil
         manualEnd = nil
+        jump = nil
         if !keepContext { previousLang = nil }
+    }
+
+    /// Клик мышью: обычно попадают в конец текста, поэтому без явной буквы перед словом
+    /// исправляем как обычно.
+    public func clicked() {
+        reset(keepContext: true)
+        jump = .click
+    }
+
+    /// Стрелки и похожие клавиши: курсор мог встать посреди слова.
+    public func cursorMoved() {
+        reset(keepContext: true)
+        jump = .keys
+    }
+
+    /// ⌘- и ⌃-сочетания, Esc: курсор на месте, но начало текущего слова мы забываем.
+    public func interrupted() {
+        let midWord = chars.last.map { !Self.boundaries.contains($0) } ?? false
+        reset(keepContext: true)
+        if midWord { jump = .keys }
     }
 
     public func type(_ s: String) {
@@ -138,7 +179,8 @@ public final class TypingSession {
     }
 
     public func backspace() {
-        guard !chars.isEmpty else { return }
+        // Стирают то, чего мы не видели: следующие буквы могут дописывать чужое слово.
+        guard !chars.isEmpty else { return cursorMoved() }
         chars.removeLast()
         lastFix = nil
         pending.removeAll { $0.end > chars.count }
@@ -165,6 +207,12 @@ public final class TypingSession {
         let start = wordStart
         let token = String(chars[start...])
         guard !token.isEmpty else { return nil }
+        let isTail = continuesHiddenWord(token, start: start)
+        jump = nil
+        if isTail {
+            pending.removeAll()
+            return nil
+        }
         if let manualEnd, manualEnd > start {
             // Слово выбрано вручную (может, дописано) — оставляем как есть.
             pending.removeAll()
@@ -222,6 +270,23 @@ public final class TypingSession {
         return TextEdit(removed: original, insert: rebuilt, switchTo: switchTo)
     }
 
+    /// Первое слово после потери курсора — хвост чужого слова? Экран знает точно; если он
+    /// молчит, после клика считаем слово целым, а после стрелок лучше ничего не трогать.
+    private func continuesHiddenWord(_ token: String, start: Int) -> Bool {
+        guard start == 0, let jump else { return false }
+        return letterBefore(token) ?? (jump == .keys)
+    }
+
+    /// Стоит ли в `screen` (текст перед курсором) буква или цифра вплотную перед `token`.
+    /// nil — на экране ещё нет этого слова, судить не по чему.
+    public static func letterBefore(_ token: String, inScreen screen: String) -> Bool? {
+        let word = Array(token), shown = Array(screen)
+        guard shown.count >= word.count,
+              zip(shown.suffix(word.count), word).allSatisfy({ TextEdit.sameOnScreen($0, $1) }) else { return nil }
+        guard let before = shown.dropLast(word.count).last else { return false }
+        return before.isLetter || before.isNumber
+    }
+
     /// Отменить последнее исправление (горячая клавиша сразу после замены).
     public func undoLastFix() -> (edit: TextEdit, fix: Fix)? {
         guard let fix = lastFix, fix.end == chars.count else { return nil }
@@ -257,7 +322,9 @@ public final class TypingSession {
     /// заменила) — верим экрану: так последнее слово можно поменять в любой момент.
     public func sync(withScreen line: String) {
         let line = String(line.split(separator: "\n", omittingEmptySubsequences: false).last ?? "").suffix(Self.maxLength)
-        if !chars.isEmpty, line.lowercased().hasSuffix(text.lowercased()) { return }
+        let shown = Array(line)
+        if !chars.isEmpty, shown.count >= chars.count,
+           zip(shown.suffix(chars.count), chars).allSatisfy({ TextEdit.sameOnScreen($0, $1) }) { return }
         reset(keepContext: true)
         chars = Array(line)
     }
@@ -307,12 +374,18 @@ public final class TypingSession {
         previousLang = target
         manualEnd = chars.count
         let change = WordChange(key: detector.key(for: token), from: target.other, to: target)
+        // Хвост чужого слова словом не считаем: меняем по просьбе, но запоминать нечего.
+        let teaches = !(start == 0 && jump == .keys)
+        lastWordTeaches = teaches
         lastFix = Fix(
-            kind: .manual, start: start, original: token, replaced: inverted, changes: [change],
+            kind: .manual, start: start, original: token, replaced: inverted, changes: teaches ? [change] : [],
             originalLang: LayoutMap.detectLang(token) ?? target.other, end: chars.count, replacedLang: target
         )
         return (TextEdit(removed: token + tail, insert: inverted + tail, switchTo: target), change)
     }
+
+    /// Можно ли учиться на последнем `invertLastWord`.
+    public private(set) var lastWordTeaches = true
 
     /// Слово в другой раскладке и её язык. Смешанное («приdtn» — раскладка не успела
     /// переключиться) целиком приводим к одной: где получается слово, иначе — к той,
