@@ -50,7 +50,11 @@ ESPEECH_TEMPO = {'classic': 1.2, 'goth': 1.0}
 # Qwen3-TTS — победитель сравнения на слух (ab.py). Живёт в своём venv: .venv-qwen
 QWEN_MODEL = 'Qwen/Qwen3-TTS-12Hz-1.7B-Base'
 QWEN_REF = 'voice-ref/ref-clean.wav'  # образец после шумоподавления — звучал лучше всего
-MAX_PAUSE = 0.3  # паузы внутри реплики длиннее этого укорачиваем
+MAX_PAUSE = 0.18  # паузы внутри реплики длиннее этого укорачиваем
+# Ускорение без «металла»: Rubber Band R3 (brew install rubberband), не ffmpeg atempo
+# зерно генерации по репликам: подобрано, где с умолчанием (7) модель срывалась
+SEEDS = {"classic": {"s6": 11}}
+QWEN_TEMPO = 1.25  # выбран на слух (×1,15 и ×1,25 сравнивались)
 
 here = os.path.dirname(os.path.abspath(__file__))
 variant = sys.argv[1] if len(sys.argv) > 1 else 'classic'
@@ -114,18 +118,23 @@ for key, text in LINES[variant].items():
     if only and key not in only:
         continue
     path = os.path.join(out, f'{key}.wav')
-    if ENGINE == 'qwen':
+    raw = os.path.join(out, 'raw', f'{key}.wav')  # неускоренный голос: менять темп без переозвучки
+    if ENGINE == 'qwen' and os.environ.get('TEMPO_ONLY') and os.path.exists(raw):
+        subprocess.run(['rubberband', '-3', '-q', '-T', str(QWEN_TEMPO), raw, path], check=True)
+    elif ENGINE == 'qwen':
         # длинную реплику — по предложениям: на длинном тексте модель иногда «галлюцинирует»
         chunks = [c for c in re.split(r'(?<=[.!?])\s+', qwen_text(text)) if c.strip()]
         pieces = []
         for c in chunks:
-            torch.manual_seed(7)  # одинаковый результат при пересборке
+            torch.manual_seed(int(os.environ.get("SEED") or SEEDS.get(variant, {}).get(key, 7)))  # одинаковый результат; SEED=… если реплика сорвалась
             wavs, sr = qwen.generate_voice_clone(text=c, language='Russian',
                                                  ref_audio=os.path.join(here, QWEN_REF), ref_text=REF_TEXT)
             pieces += [np.asarray(wavs[0], dtype=np.float32), np.zeros(int(0.2 * sr), np.float32)]
         wav = shorten_pauses(np.concatenate(pieces), sr)
         wav = librosa.resample(wav, orig_sr=sr, target_sr=48000, res_type='soxr_vhq')
-        sf.write(path, wav, 48000)
+        os.makedirs(os.path.dirname(raw), exist_ok=True)
+        sf.write(raw, wav, 48000)
+        subprocess.run(['rubberband', '-3', '-q', '-T', str(QWEN_TEMPO), raw, path], check=True)
     elif use_espeech:
         # SSML ESpeech не понимает: паузы превращаем в многоточие
         plain = re.sub(r'\s*<break[^>]*/>\s*', '… ', text)
