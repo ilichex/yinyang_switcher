@@ -4,3 +4,5 @@ audio/
 *.mp4
 timeline.json
 voice.json
+ab/
+.venv-qwen/

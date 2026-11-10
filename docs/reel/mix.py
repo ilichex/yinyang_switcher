@@ -5,6 +5,7 @@
 # goth: без бита (кавер подкладывается в Instagram), колокола, реверберация на голосе, тихий гул в до миноре.
 import json, os, sys, wave
 import numpy as np
+import librosa
 
 SR = 48000
 here = os.path.dirname(os.path.abspath(__file__))
@@ -138,7 +139,8 @@ for e in tl['events']:
     with wave.open(os.path.join(here, 'audio', variant, f"{e['id']}.wav")) as w:
         sr = w.getframerate()
         x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16) / 32768
-    x = np.interp(np.arange(int(len(x) * SR / sr)) * sr / SR, np.arange(len(x)), x)  # пересэмплинг в 48 кГц
+    # качественный пересэмплинг в 48 кГц (линейный давал «цифровую» резкость в верхах)
+    x = librosa.resample(x, orig_sr=sr, target_sr=SR, res_type='soxr_vhq')
     add(voice, e['t'], x / (np.abs(x).max() + 1e-9), 0.9)
 
 # ducking: где звучит голос, музыка тише
