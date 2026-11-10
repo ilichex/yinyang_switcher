@@ -1,0 +1,6 @@
+.venv/
+audio/
+*.wav
+*.mp4
+timeline.json
+voice.json

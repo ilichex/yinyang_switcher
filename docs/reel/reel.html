@@ -27,6 +27,13 @@
   .bad { background: rgba(255,255,255,.05); color: #7F8BB8; border: 2px solid rgba(255,255,255,.08); }
   .good { background: linear-gradient(135deg, rgba(0,229,255,.22), rgba(61,123,255,.28));
     border: 2px solid rgba(0,229,255,.55); color: #fff; }
+  .rival { width: 900px; display: flex; align-items: center; justify-content: space-between; margin: 16px 0;
+    padding: 40px 50px; border-radius: 36px; background: rgba(255,255,255,.06); border: 2px solid rgba(255,255,255,.1); }
+  .rival .rn { font-size: 52px; font-weight: 700; }
+  .rival .rp { font-size: 48px; font-weight: 700; text-align: right; color: #C9D6FF; }
+  .rival.win { background: linear-gradient(135deg, rgba(0,229,255,.25), rgba(61,123,255,.32));
+    border-color: rgba(0,229,255,.7); box-shadow: 0 0 80px rgba(0,229,255,.35); padding: 54px 50px; }
+  .rival.win .rn { font-size: 64px; } .rival.win .rp { color: #fff; }
   .chip { font-size: 56px; font-weight: 700; padding: 30px 54px; border-radius: 999px; margin: 18px 0;
     background: rgba(61,123,255,.22); border: 2px solid rgba(0,229,255,.5); }
 </style></head>
@@ -104,6 +111,15 @@
     <div class="row cmp"><div class="cell bad">✕ куча горячих<br>клавиш</div><div class="cell good">✓ одна клавиша ⌥ на всё</div></div>
   </div>
 
+  <!-- 4b. Конкуренты мельком -->
+  <div class="scene" id="s4b">
+    <div class="h1" style="font-size:80px;margin-bottom:70px">А что у других?</div>
+    <div class="rival dim"><div class="rn">Punto Switcher</div><div class="rp">бесплатно</div></div>
+    <div class="rival dim"><div class="rn">Caramba Switcher</div><div class="rp">499 ₽ в год</div></div>
+    <div class="rival win"><div class="rn">Yin<span class="grad">Yang</span></div><div class="rp">бесплатно<br><span style="font-size:36px;color:#A9C4FF">код открыт</span></div></div>
+    <div style="margin-top:50px;font-size:28px;color:#6F7DB0">цены — с сайтов разработчиков, ноябрь 2026</div>
+  </div>
+
   <!-- 5. Лёгкость -->
   <div class="scene" id="s5">
     <div class="h1" id="s5t" style="margin-bottom:60px">Лёгкий<br>и приватный</div>
@@ -132,9 +148,40 @@ const eIO = k => { k = clamp(k); return k < .5 ? 4*k*k*k : 1 - Math.pow(-2*k + 2
 const eBack = k => { k = clamp(k); const c = 1.9; return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2); };
 const $ = id => document.getElementById(id);
 
-// Сцены: [id, начало, конец]
-const SCENES = [['s1', 0, 3], ['s2', 3, 6.2], ['s3', 6.2, 11], ['s4', 11, 17], ['s5', 17, 19.4], ['s6', 19.4, 22.5]];
+// Длина сцены = max(минимум для анимации, длина реплики). VOICE подставляет render.mjs из voice.json.
+const V = window.VOICE || { s1: 2.4, s2: 3.1, s3: 5.5, s4: 7.6, s4b: 5.2, s5: 3.7, s6: 1.7 };
+const MIN = { s1: 3, s2: 3.2, s3: 4.8, s4: 6, s4b: 4.6, s5: 2.6, s6: 3.2 };
+const ORDER = ['s1', 's2', 's3', 's4', 's4b', 's5', 's6'];
+const VOICE_DELAY = 0.15, TAIL = 0.35;
+const S = {};
+let acc = 0;
+const SCENES = ORDER.map(id => {
+  const d = Math.max(MIN[id], V[id] + VOICE_DELAY + TAIL);
+  S[id] = { a: acc, d };
+  acc += d;
+  return [id, S[id].a, acc];
+});
 const TR = 0.22; // длина «вжух»-перехода
+
+// Звуковые события для mix.py: голос, «вжух», клики клавиш, «поп»
+const EVENTS = [];
+const ev = (t, type, extra = {}) => EVENTS.push({ t: +t.toFixed(3), type, ...extra });
+const keys = (n, t0, t1) => { for (let i = 1; i <= n; i++) ev(t0 + (i - 0.5) / n * (t1 - t0), 'key'); };
+ORDER.forEach(id => { ev(S[id].a + VOICE_DELAY, 'voice', { id }); if (S[id].a > 0) ev(S[id].a - 0.12, 'whoosh'); });
+keys(15, 0.3, 1.5); ev(1.7, 'error');
+ev(S.s2.a + 0.05, 'riser'); ev(S.s2.a + 1.0, 'boom');
+const k3 = S.s3.d / 4.8; // демо растягивается под реплику
+keys(15, S.s3.a + 0.25 * k3, S.s3.a + 1.2 * k3); ev(S.s3.a + 1.45 * k3, 'ding');
+keys(10, S.s3.a + 2.6 * k3, S.s3.a + 3.35 * k3); ev(S.s3.a + 3.6 * k3, 'ding');
+const step4 = (S.s4.d - 1.2) / 5;
+for (let i = 0; i < 5; i++) ev(S.s4.a + 0.35 + i * step4, 'pop', { i });
+const step4b = (S.s4b.d - 0.9) / 3;
+for (let i = 0; i < 3; i++) ev(S.s4b.a + 0.3 + i * step4b, i === 2 ? 'boom' : 'pop', { i });
+const step5 = Math.min(0.6, (S.s5.d - 0.9) / 4);
+for (let i = 0; i < 4; i++) ev(S.s5.a + 0.25 + i * step5, 'pop', { i: i + 2 });
+for (let s = 0; S.s6.a + s + 0.4 < acc; s++) ev(S.s6.a + s + 0.4, 'spin');
+EVENTS.sort((x, y) => x.t - y.t);
+window.TIMELINE = { duration: acc, scenes: SCENES, events: EVENTS };
 
 // Стопка копий значка: первая чёткая, остальные — шлейф (имитация motion blur из рилсов)
 function makeIcons(host, size, trail) {
@@ -196,9 +243,9 @@ function render(t) {
 
   // 2. значок влетает с вращением: 3 оборота с отскоком, потом медленный ход
   {
-    const L = t - 3;
+    const L = t - S.s2.a;
     // встаёт ровно в 0° — точки на вертикали
-    const ang = x => { const l = x - 3; return lerp(-1080, 0, eBack(l / 1.3)); };
+    const ang = x => { const l = x - S.s2.a; return lerp(-1080, 0, eBack(l / 1.3)); };
     const sc = lerp(0.05, 1, eBack(L / 1.0));
     const pulse = 1 + 0.05 * Math.max(0, Math.sin((L - 1.2) * 6)) * clamp(L - 1.2);
     setIcons(ic2, ang, t, sc * pulse, 20 + 40 * clamp(1 - Math.abs(L - 1.1) / 0.6));
@@ -209,7 +256,7 @@ function render(t) {
 
   // 3. демо: два примера
   {
-    const L = t - 6.2;
+    const L = (t - S.s3.a) / k3;
     const ex = L < 2.4
       ? { lbl: 'Telegram', from: 'ghbdtn rfr ltkf', to: 'привет как дела', t0: 0.25, t1: 1.2, fix: 1.45 }
       : { lbl: 'Терминал', from: 'пше ыефегы', to: 'git status', t0: 2.6, t1: 3.35, fix: 3.6 };
@@ -231,40 +278,52 @@ function render(t) {
 
   // 4. сравнение: строки появляются по очереди
   {
-    const L = t - 11;
+    const L = t - S.s4.a;
     document.querySelectorAll('#s4 .cmp').forEach((row, i) => {
-      const k = eBack((L - 0.35 - i * 0.95) / 0.45);
-      row.style.opacity = clamp((L - 0.35 - i * 0.95) / 0.2);
+      const k = eBack((L - 0.35 - i * step4) / 0.45);
+      row.style.opacity = clamp((L - 0.35 - i * step4) / 0.2);
       row.style.transform = `translateX(${(1 - k) * 160}px)`;
       const good = row.children[1];
-      const pop = clamp(1 - Math.abs(L - 0.6 - i * 0.95) / 0.25);
+      const pop = clamp(1 - Math.abs(L - 0.6 - i * step4) / 0.25);
       good.style.boxShadow = `0 0 ${60 * pop}px rgba(0,229,255,${0.6 * pop})`;
     });
   }
 
   // 5. чипы выпрыгивают
   {
-    const L = t - 17;
+    const L = t - S.s5.a;
     document.querySelectorAll('#s5 .chip').forEach((c, i) => {
-      const k = eBack((L - 0.25 - i * 0.28) / 0.4);
-      c.style.opacity = clamp((L - 0.25 - i * 0.28) / 0.15);
+      const k = eBack((L - 0.25 - i * step5) / 0.4);
+      c.style.opacity = clamp((L - 0.25 - i * step5) / 0.15);
       c.style.transform = `scale(${lerp(0.4, 1, k)})`;
     });
   }
 
   // 6. финал: значок крутится непрерывно с «ударами» в такт
   {
-    const L = t - 19.4;
+    const L = t - S.s6.a;
     // каждую секунду рывок на полный оборот, между рывками — точки на вертикали
-    const ang = x => { const l = x - 19.4; return 360 * Math.floor(l) + 360 * eIO(((l % 1) - 0.4) / 0.6); };
+    const ang = x => { const l = x - S.s6.a; return 360 * Math.floor(l) + 360 * eIO(((l % 1) - 0.4) / 0.6); };
     const beat = 1 + 0.06 * Math.pow(Math.max(0, Math.cos(L * Math.PI * 2)), 8);
     setIcons(ic6, ang, t, lerp(0.3, 1, eBack(L / 0.6)) * beat, 30 + 30 * (beat - 1) / 0.06);
     $('s6cta').style.opacity = eOut((L - 0.8) / 0.3);
     $('s6cta').style.transform = `scale(${lerp(0.7, 1, eBack((L - 0.8) / 0.4))})`;
   }
+
+  // 4b. конкуренты мельком: только проверяемые факты (цены со страниц продуктов)
+  {
+    const L = t - S.s4b.a;
+    document.querySelectorAll('#s4b .rival').forEach((c, i) => {
+      const k = eBack((L - 0.3 - i * step4b) / 0.4);
+      c.style.opacity = clamp((L - 0.3 - i * step4b) / 0.15);
+      c.style.transform = `translateY(${(1 - k) * 120}px) scale(${lerp(0.85, 1, k)})`;
+    });
+    const win = clamp((L - 0.3 - 2 * step4b) / 0.3);
+    document.querySelectorAll('#s4b .rival.dim').forEach(c => c.style.filter = `grayscale(${win}) brightness(${1 - 0.35 * win})`);
+  }
 }
 window.render = render;
-window.DURATION = 22.5;
+window.DURATION = acc;
 render(0);
 </script>
 </body></html>

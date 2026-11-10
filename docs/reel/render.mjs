@@ -3,6 +3,7 @@
 import { createRequire } from 'module';
 import { spawn, execSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const require = createRequire(execSync('npm root -g').toString().trim() + '/');
@@ -12,7 +13,12 @@ const FPS = 30;
 
 const browser = await chromium.launch({ channel: 'chrome' });
 const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+// длительности реплик из tts.py → сцены подстраиваются под голос
+const voiceFile = path.join(dir, 'voice.json');
+if (fs.existsSync(voiceFile)) await page.addInitScript(`window.VOICE = ${fs.readFileSync(voiceFile, 'utf8')};`);
 await page.goto('file://' + path.join(dir, 'reel.html'));
+// таймлайн событий для mix.py
+fs.writeFileSync(path.join(dir, 'timeline.json'), JSON.stringify(await page.evaluate(() => TIMELINE), null, 1));
 
 const preview = process.argv.slice(2).map(Number);
 if (preview.length) {
@@ -22,8 +28,8 @@ if (preview.length) {
   }
 } else {
   const total = Math.round((await page.evaluate(() => DURATION)) * FPS);
-  const out = path.join(dir, 'yinyang-reel.mp4');
-  const ff = spawn('ffmpeg', ['-y', '-f', 'image2pipe', '-framerate', String(FPS), '-i', '-',
+  const out = path.join(dir, 'video-only.mp4');
+  const ff = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', String(FPS), '-i', '-',
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-preset', 'medium', '-movflags', '+faststart', out],
     { stdio: ['pipe', 'ignore', 'inherit'] });
   for (let i = 0; i < total; i++) {
