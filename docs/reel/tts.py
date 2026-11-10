@@ -1,8 +1,8 @@
-# Озвучка рилса нейросетью Silero v4 (офлайн). Два варианта текста: classic и goth.
+# Озвучка рилса твоим голосом (офлайн). Движки: Qwen3-TTS (основной), ESpeech, Silero (запасной).
 # Каждая реплика — отдельный wav в audio/<вариант>/; длительности — в voice-<вариант>.json,
 # по ним reel.html растягивает сцены под голос.
-# Запуск: .venv/bin/python tts.py classic [голос]   голоса: aidar baya kseniya xenia eugene
-# «+» перед гласной — ударение (иначе «Инь-Ян» читается криво).
+# Запуск: .venv-qwen/bin/python tts.py classic [s2 s4 ...]   ESpeech/Silero: ENGINE=espeech .venv/bin/python tts.py
+# «+» перед гласной — ударение для ESpeech/Silero; для Qwen снимается.
 import json, os, re, subprocess, sys, urllib.request
 import torch, soundfile as sf
 
@@ -47,11 +47,41 @@ ESPEECH_SPEED = {'classic': 1.0, 'goth': 0.85}
 PITCH = {'classic': 1.0, 'goth': 2 ** (-3 / 12)}
 ESPEECH_TEMPO = {'classic': 1.2, 'goth': 1.0}
 
+# Qwen3-TTS — победитель сравнения на слух (ab.py). Живёт в своём venv: .venv-qwen
+QWEN_MODEL = 'Qwen/Qwen3-TTS-12Hz-1.7B-Base'
+QWEN_REF = 'voice-ref/ref-clean.wav'  # образец после шумоподавления — звучал лучше всего
+MAX_PAUSE = 0.3  # паузы внутри реплики длиннее этого укорачиваем
+
 here = os.path.dirname(os.path.abspath(__file__))
 variant = sys.argv[1] if len(sys.argv) > 1 else 'classic'
-use_espeech = os.path.exists(os.path.join(here, REF_AUDIO))
+# движок: ENGINE=qwen|espeech|silero; по умолчанию Qwen3, если есть образец голоса
+ENGINE = os.environ.get('ENGINE') or ('qwen' if os.path.exists(os.path.join(here, QWEN_REF)) else
+                                      'espeech' if os.path.exists(os.path.join(here, REF_AUDIO)) else 'silero')
+use_espeech = ENGINE == 'espeech'
 out = os.path.join(here, 'audio', variant)
 os.makedirs(out, exist_ok=True)
+
+
+def shorten_pauses(wav, sr, max_pause=MAX_PAUSE, top_db=38):
+    """Склеивает речь, оставляя между кусками не больше max_pause тишины."""
+    import numpy as np, librosa
+    parts = librosa.effects.split(wav, top_db=top_db, frame_length=1024, hop_length=256)
+    if len(parts) == 0:
+        return wav
+    keep, gap = [], int(max_pause * sr)
+    for i, (a, b) in enumerate(parts):
+        if i:
+            prev_end = parts[i - 1][1]
+            keep.append(wav[prev_end: prev_end + min(a - prev_end, gap)])
+        keep.append(wav[a:b])
+    pad = int(0.05 * sr)  # чуть воздуха по краям
+    return np.concatenate([np.zeros(pad, wav.dtype)] + keep + [np.zeros(pad, wav.dtype)])
+
+
+def qwen_text(text):
+    """Для Qwen: без SSML и «+», «Инь-Ян» через дефис (запятая давала лишнюю паузу)."""
+    t = re.sub(r'\s*<break[^>]*/>\s*', ', ', text).replace('+', '')
+    return re.sub(r'Инь,?\s*Ян', 'Инь-Ян', t)
 
 
 def ffmpeg_af(path, af):  # обработать файл фильтром ffmpeg на месте
@@ -59,7 +89,13 @@ def ffmpeg_af(path, af):  # обработать файл фильтром ffmpe
     os.replace(path + '.tmp.wav', path)
 
 
-if use_espeech:
+if ENGINE == 'qwen':
+    import numpy as np, librosa
+    from qwen_tts import Qwen3TTSModel
+    dev = 'mps' if torch.backends.mps.is_available() else 'cpu'
+    qwen = Qwen3TTSModel.from_pretrained(QWEN_MODEL, device_map=dev, dtype=torch.float16, attn_implementation='sdpa')
+    name = 'Qwen3-TTS (твой голос)'
+elif use_espeech:
     from espeech import ESpeech
     engine, name = ESpeech(), 'ESpeech (твой голос)'
 else:
@@ -78,7 +114,19 @@ for key, text in LINES[variant].items():
     if only and key not in only:
         continue
     path = os.path.join(out, f'{key}.wav')
-    if use_espeech:
+    if ENGINE == 'qwen':
+        # длинную реплику — по предложениям: на длинном тексте модель иногда «галлюцинирует»
+        chunks = [c for c in re.split(r'(?<=[.!?])\s+', qwen_text(text)) if c.strip()]
+        pieces = []
+        for c in chunks:
+            torch.manual_seed(7)  # одинаковый результат при пересборке
+            wavs, sr = qwen.generate_voice_clone(text=c, language='Russian',
+                                                 ref_audio=os.path.join(here, QWEN_REF), ref_text=REF_TEXT)
+            pieces += [np.asarray(wavs[0], dtype=np.float32), np.zeros(int(0.2 * sr), np.float32)]
+        wav = shorten_pauses(np.concatenate(pieces), sr)
+        wav = librosa.resample(wav, orig_sr=sr, target_sr=48000, res_type='soxr_vhq')
+        sf.write(path, wav, 48000)
+    elif use_espeech:
         # SSML ESpeech не понимает: паузы превращаем в многоточие
         plain = re.sub(r'\s*<break[^>]*/>\s*', '… ', text)
         wav, sr = engine.say(os.path.join(here, REF_AUDIO), REF_TEXT, plain, speed=ESPEECH_SPEED[variant])

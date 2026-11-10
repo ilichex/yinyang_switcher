@@ -11,7 +11,7 @@ mux() {  # видео + звук, громкость под соцсети (−1
 variants=("$@"); (( $#variants )) || variants=(classic)  # готика отложена: zsh build.sh goth
 for v in $variants; do
   # озвучка долгая (~10 мин на вариант): заново только если её нет или задан RETTS=1
-  [[ -f voice-$v.json && -z $RETTS ]] || .venv/bin/python tts.py "$v"
+  [[ -f voice-$v.json && -z $RETTS ]] || .venv-qwen/bin/python tts.py "$v"
   VARIANT=$v node render.mjs
   .venv/bin/python mix.py "$v"
   mux "$v" "mix-$v.wav" "yinyang-reel-$v.mp4"
