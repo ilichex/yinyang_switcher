@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1080px; height: 1920px; overflow: hidden; background: #050826; }
+  body { font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif; color: #fff; }
+  #stage { position: absolute; inset: 0; overflow: hidden;
+    background: radial-gradient(120% 80% at 50% 0%, #13237A 0%, #070B33 55%, #040620 100%); }
+  .blob { position: absolute; border-radius: 50%; filter: blur(120px); opacity: .55; }
+  .scene { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; opacity: 0; }
+  .mono { font-family: "SF Mono", Menlo, monospace; }
+  .h1 { font-size: 92px; font-weight: 800; letter-spacing: -2px; text-align: center; line-height: 1.05; }
+  .h2 { font-size: 54px; font-weight: 600; text-align: center; color: #A9C4FF; }
+  .grad { background: linear-gradient(90deg, #00E5FF, #3D7BFF 50%, #9B6BFF);
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .icon { position: absolute; }
+  .icon svg { width: 100%; height: 100%; display: block; }
+  .caret { display: inline-block; width: 8px; height: 1em; background: #00E5FF; vertical-align: -0.12em; margin-left: 6px; }
+  .card { width: 940px; border-radius: 44px; background: rgba(20, 32, 110, .55);
+    border: 2px solid rgba(120, 170, 255, .28); box-shadow: 0 40px 120px rgba(0,0,0,.45); overflow: hidden; }
+  .bar { height: 84px; display: flex; align-items: center; padding: 0 34px; gap: 14px;
+    background: rgba(255,255,255,.06); border-bottom: 2px solid rgba(120,170,255,.18); }
+  .dot { width: 22px; height: 22px; border-radius: 50%; }
+  .row { display: flex; gap: 24px; width: 960px; margin-top: 30px; }
+  .cell { flex: 1; border-radius: 30px; padding: 30px 30px; font-size: 40px; font-weight: 600; line-height: 1.2; }
+  .bad { background: rgba(255,255,255,.05); color: #7F8BB8; border: 2px solid rgba(255,255,255,.08); }
+  .good { background: linear-gradient(135deg, rgba(0,229,255,.22), rgba(61,123,255,.28));
+    border: 2px solid rgba(0,229,255,.55); color: #fff; }
+  .chip { font-size: 56px; font-weight: 700; padding: 30px 54px; border-radius: 999px; margin: 18px 0;
+    background: rgba(61,123,255,.22); border: 2px solid rgba(0,229,255,.5); }
+</style></head>
+<body>
+<!-- Логотип один раз; дальше копии через <use>. Не display:none — иначе градиенты пропадут. -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="cool" gradientUnits="userSpaceOnUse" x1="40" y1="28" x2="180" y2="228">
+      <stop offset="0" stop-color="#00E5FF"/><stop offset="0.35" stop-color="#3D7BFF"/>
+      <stop offset="0.7" stop-color="#7B2FF7"/><stop offset="1" stop-color="#2A0A7A"/></linearGradient>
+    <linearGradient id="warm" gradientUnits="userSpaceOnUse" x1="216" y1="28" x2="76" y2="228">
+      <stop offset="0" stop-color="#FFE14D"/><stop offset="0.35" stop-color="#FF8A3D"/>
+      <stop offset="0.7" stop-color="#FF3D7F"/><stop offset="1" stop-color="#B0136E"/></linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFE14D"/><stop offset="0.5" stop-color="#FF3D7F"/><stop offset="1" stop-color="#00E5FF"/></linearGradient>
+    <radialGradient id="gloss" cx="0.32" cy="0.25" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/><stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+    <symbol id="yy" viewBox="0 0 256 256">
+      <circle cx="128" cy="128" r="104" fill="url(#ring)"/>
+      <circle cx="128" cy="128" r="100" fill="url(#warm)"/>
+      <path d="M128,28 A100,100 0 0,0 128,228 A50,50 0 0,0 128,128 A50,50 0 0,1 128,28 Z" fill="url(#cool)"/>
+      <circle cx="128" cy="128" r="100" fill="url(#gloss)"/>
+      <circle cx="128" cy="178" r="15" fill="#FF7A3D"/>
+      <circle cx="128" cy="78" r="15" fill="#3D7BFF"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div id="stage">
+  <div class="blob" id="b1" style="width:900px;height:900px;background:#00E5FF"></div>
+  <div class="blob" id="b2" style="width:1000px;height:1000px;background:#3D7BFF"></div>
+  <div class="blob" id="b3" style="width:800px;height:800px;background:#7B2FF7"></div>
+  <div id="flash" style="position:absolute;inset:0;background:#BFEFFF;opacity:0"></div>
+
+  <!-- 1. Крючок -->
+  <div class="scene" id="s1">
+    <div class="h2" id="s1cap" style="margin-bottom:70px">Знакомо?</div>
+    <div class="mono" id="s1txt" style="font-size:110px;font-weight:700;color:#fff"></div>
+    <div class="h1" id="s1sub" style="margin-top:90px;font-size:80px">Опять не та<br>раскладка 😩</div>
+  </div>
+
+  <!-- 2. Появление значка -->
+  <div class="scene" id="s2">
+    <div id="s2icons" style="position:relative;width:560px;height:560px"></div>
+    <div class="h1" id="s2t" style="margin-top:80px;font-size:120px">Yin<span class="grad">Yang</span></div>
+    <div class="h2" id="s2s" style="margin-top:24px">исправляет раскладку сам</div>
+  </div>
+
+  <!-- 3. Демо -->
+  <div class="scene" id="s3">
+    <div class="h1" id="s3title" style="font-size:76px;margin-bottom:60px">Просто печатай</div>
+    <div class="card">
+      <div class="bar">
+        <div class="dot" style="background:#FF5F57"></div><div class="dot" style="background:#FEBC2E"></div><div class="dot" style="background:#28C840"></div>
+        <div id="s3label" style="margin-left:22px;font-size:34px;color:#A9C4FF;font-weight:600"></div>
+        <div id="s3icon" style="margin-left:auto;width:52px;height:52px"><svg viewBox="0 0 256 256"><use href="#yy"/></svg></div>
+      </div>
+      <div style="padding:70px 50px 80px;min-height:300px">
+        <div class="mono" id="s3txt" style="font-size:76px;font-weight:700"></div>
+      </div>
+    </div>
+    <div class="h2" id="s3hint" style="margin-top:60px;font-size:44px">значок крутится — значит, исправил</div>
+  </div>
+
+  <!-- 4. Сравнение -->
+  <div class="scene" id="s4" style="justify-content:flex-start;padding-top:300px">
+    <div class="row" style="margin:0">
+      <div style="flex:1;text-align:center;font-size:44px;font-weight:700;color:#7F8BB8">Обычный свитчер</div>
+      <div style="flex:1;text-align:center;font-size:44px;font-weight:800" class="grad">YinYang</div>
+    </div>
+    <div class="row cmp"><div class="cell bad">✕ угадывает<br>по буквам</div><div class="cell good">✓ понимает контекст фразы</div></div>
+    <div class="row cmp"><div class="cell bad">✕ ломает код<br>и ссылки</div><div class="cell good">✓ <span class="mono">пше</span> → <span class="mono">git</span>, ссылки не трогает</div></div>
+    <div class="row cmp"><div class="cell bad">✕ «чинит» имена<br>и опечатки</div><div class="cell good">✓ правильное не трогает</div></div>
+    <div class="row cmp"><div class="cell bad">✕ одни правила<br>везде</div><div class="cell good">✓ учится отдельно в каждой программе</div></div>
+    <div class="row cmp"><div class="cell bad">✕ куча горячих<br>клавиш</div><div class="cell good">✓ одна клавиша ⌥ на всё</div></div>
+  </div>
+
+  <!-- 5. Лёгкость -->
+  <div class="scene" id="s5">
+    <div class="h1" id="s5t" style="margin-bottom:60px">Лёгкий<br>и приватный</div>
+    <div class="chip">📡 без интернета</div>
+    <div class="chip">🪶 ~40 МБ памяти</div>
+    <div class="chip">❄️ 0% CPU в покое</div>
+    <div class="chip">🔒 текст не уходит</div>
+  </div>
+
+  <!-- 6. Финал -->
+  <div class="scene" id="s6">
+    <div id="s6icons" style="position:relative;width:620px;height:620px"></div>
+    <div class="h1" style="margin-top:70px;font-size:130px">Yin<span class="grad">Yang</span></div>
+    <div class="h2" style="margin-top:20px">бесплатно · macOS 14+</div>
+    <div id="s6cta" style="margin-top:70px;font-size:50px;font-weight:700;padding:28px 60px;border-radius:999px;
+      background:linear-gradient(90deg,#00C8FF,#3D7BFF,#7B2FF7)">ссылка в профиле ↗</div>
+  </div>
+</div>
+
+<script>
+// Каждый кадр — чистая функция времени t: можно рендерить кадр за кадром без пропусков.
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const eOut = k => 1 - Math.pow(1 - clamp(k), 3);
+const eIO = k => { k = clamp(k); return k < .5 ? 4*k*k*k : 1 - Math.pow(-2*k + 2, 3) / 2; };
+const eBack = k => { k = clamp(k); const c = 1.9; return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2); };
+const $ = id => document.getElementById(id);
+
+// Сцены: [id, начало, конец]
+const SCENES = [['s1', 0, 3], ['s2', 3, 6.2], ['s3', 6.2, 11], ['s4', 11, 17], ['s5', 17, 19.4], ['s6', 19.4, 22.5]];
+const TR = 0.22; // длина «вжух»-перехода
+
+// Стопка копий значка: первая чёткая, остальные — шлейф (имитация motion blur из рилсов)
+function makeIcons(host, size, trail) {
+  for (let i = trail; i >= 0; i--) {
+    const d = document.createElement('div');
+    d.className = 'icon';
+    d.style.cssText = `left:0;top:0;width:${size}px;height:${size}px;opacity:${i ? 0.18 : 1}`;
+    d.innerHTML = '<svg viewBox="0 0 256 256"><use href="#yy"/></svg>';
+    host.appendChild(d);
+  }
+  return [...host.children].reverse(); // [0] — основной
+}
+const ic2 = makeIcons($('s2icons'), 560, 5);
+const ic6 = makeIcons($('s6icons'), 620, 5);
+function setIcons(icons, angleFn, t, scale, glow) {
+  icons.forEach((el, i) => {
+    const a = angleFn(t - i * 0.022);
+    el.style.transform = `scale(${scale}) rotate(${a}deg)`;
+    el.style.filter = i ? 'blur(6px)' : `drop-shadow(0 0 ${glow}px rgba(0,229,255,.75))`;
+  });
+}
+
+// Набор текста с курсором
+function typed(str, t0, t1, t) {
+  const n = Math.round(clamp((t - t0) / (t1 - t0)) * str.length);
+  return str.slice(0, n);
+}
+const caret = t => (Math.floor(t * 2.4) % 2 ? '' : '<span class="caret"></span>');
+
+function render(t) {
+  // фон: медленно плывущие пятна
+  $('b1').style.transform = `translate(${-200 + 120*Math.sin(t*.5)}px, ${-150 + 100*Math.cos(t*.4)}px)`;
+  $('b2').style.transform = `translate(${400 + 140*Math.cos(t*.35)}px, ${900 + 160*Math.sin(t*.45)}px)`;
+  $('b3').style.transform = `translate(${-100 + 160*Math.sin(t*.3 + 1)}px, ${1300 + 120*Math.cos(t*.5)}px)`;
+
+  // переходы: уходящая сцена увеличивается и размывается, новая въезжает из меньшего масштаба
+  let flash = 0;
+  for (const [id, a, b] of SCENES) {
+    const el = $(id);
+    if (t < a - 0.001 || t > b + TR) { el.style.opacity = 0; continue; }
+    const kin = a === 0 ? 1 : eOut((t - a) / TR);
+    const kout = clamp((t - b) / TR);
+    const s = lerp(0.86, 1, kin) * lerp(1, 1.25, eIO(kout));
+    el.style.opacity = Math.min(kin, 1 - kout);
+    el.style.transform = `scale(${s})`;
+    el.style.filter = `blur(${(1 - kin) * 18 + kout * 22}px)`;
+    if (a > 0) flash = Math.max(flash, 0.35 * (1 - Math.abs(t - a) / 0.12));
+  }
+  $('flash').style.opacity = clamp(flash);
+
+  // 1. крючок
+  const ghb = 'ghbdtn rfr ltkf';
+  $('s1txt').innerHTML = typed(ghb, 0.3, 1.5, t) + caret(t);
+  const shake = t > 1.7 && t < 2.1 ? Math.sin(t * 90) * 14 : 0;
+  $('s1txt').style.transform = `translateX(${shake}px)`;
+  $('s1txt').style.color = t > 1.7 ? '#FF6B8A' : '#fff';
+  $('s1sub').style.opacity = eOut((t - 1.9) / 0.3);
+  $('s1sub').style.transform = `translateY(${(1 - eOut((t - 1.9) / 0.3)) * 60}px)`;
+
+  // 2. значок влетает с вращением: 3 оборота с отскоком, потом медленный ход
+  {
+    const L = t - 3;
+    // встаёт ровно в 0° — точки на вертикали
+    const ang = x => { const l = x - 3; return lerp(-1080, 0, eBack(l / 1.3)); };
+    const sc = lerp(0.05, 1, eBack(L / 1.0));
+    const pulse = 1 + 0.05 * Math.max(0, Math.sin((L - 1.2) * 6)) * clamp(L - 1.2);
+    setIcons(ic2, ang, t, sc * pulse, 20 + 40 * clamp(1 - Math.abs(L - 1.1) / 0.6));
+    $('s2t').style.opacity = eOut((L - 0.9) / 0.35);
+    $('s2t').style.transform = `translateY(${(1 - eOut((L - 0.9) / 0.35)) * 50}px)`;
+    $('s2s').style.opacity = eOut((L - 1.3) / 0.35);
+  }
+
+  // 3. демо: два примера
+  {
+    const L = t - 6.2;
+    const ex = L < 2.4
+      ? { lbl: 'Telegram', from: 'ghbdtn rfr ltkf', to: 'привет как дела', t0: 0.25, t1: 1.2, fix: 1.45 }
+      : { lbl: 'Терминал', from: 'пше ыефегы', to: 'git status', t0: 2.6, t1: 3.35, fix: 3.6 };
+    $('s3label').textContent = ex.lbl;
+    if (L < ex.fix) {
+      $('s3txt').innerHTML = typed(ex.from, ex.t0, ex.t1, L) + caret(L);
+      $('s3txt').style.color = '#fff';
+      $('s3txt').style.transform = 'none';
+    } else {
+      const k = eBack((L - ex.fix) / 0.35);
+      $('s3txt').innerHTML = `<span class="grad">${ex.to}</span>` + caret(L);
+      $('s3txt').style.transform = `scale(${lerp(0.8, 1, k)})`;
+    }
+    // значок в «строке меню» делает оборот в момент исправления
+    const spin = x => 360 * eIO((x - ex.fix) / 0.6);
+    $('s3icon').style.transform = `rotate(${spin(L)}deg) scale(${1 + 0.35 * Math.sin(Math.PI * clamp((L - ex.fix) / 0.6))})`;
+    $('s3hint').style.opacity = eOut((L - 1.5) / 0.4);
+  }
+
+  // 4. сравнение: строки появляются по очереди
+  {
+    const L = t - 11;
+    document.querySelectorAll('#s4 .cmp').forEach((row, i) => {
+      const k = eBack((L - 0.35 - i * 0.95) / 0.45);
+      row.style.opacity = clamp((L - 0.35 - i * 0.95) / 0.2);
+      row.style.transform = `translateX(${(1 - k) * 160}px)`;
+      const good = row.children[1];
+      const pop = clamp(1 - Math.abs(L - 0.6 - i * 0.95) / 0.25);
+      good.style.boxShadow = `0 0 ${60 * pop}px rgba(0,229,255,${0.6 * pop})`;
+    });
+  }
+
+  // 5. чипы выпрыгивают
+  {
+    const L = t - 17;
+    document.querySelectorAll('#s5 .chip').forEach((c, i) => {
+      const k = eBack((L - 0.25 - i * 0.28) / 0.4);
+      c.style.opacity = clamp((L - 0.25 - i * 0.28) / 0.15);
+      c.style.transform = `scale(${lerp(0.4, 1, k)})`;
+    });
+  }
+
+  // 6. финал: значок крутится непрерывно с «ударами» в такт
+  {
+    const L = t - 19.4;
+    // каждую секунду рывок на полный оборот, между рывками — точки на вертикали
+    const ang = x => { const l = x - 19.4; return 360 * Math.floor(l) + 360 * eIO(((l % 1) - 0.4) / 0.6); };
+    const beat = 1 + 0.06 * Math.pow(Math.max(0, Math.cos(L * Math.PI * 2)), 8);
+    setIcons(ic6, ang, t, lerp(0.3, 1, eBack(L / 0.6)) * beat, 30 + 30 * (beat - 1) / 0.06);
+    $('s6cta').style.opacity = eOut((L - 0.8) / 0.3);
+    $('s6cta').style.transform = `scale(${lerp(0.7, 1, eBack((L - 0.8) / 0.4))})`;
+  }
+}
+window.render = render;
+window.DURATION = 22.5;
+render(0);
+</script>
+</body></html>

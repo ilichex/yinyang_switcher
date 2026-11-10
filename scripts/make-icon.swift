@@ -36,8 +36,8 @@ func render(_ size: Int) -> Data {
     // Инь-ян.
     let r = tile.width * 0.33
     ctx.saveGState()
+    // Без наклона: точки инь-яна строго на вертикали, как в строке меню и logo.svg.
     ctx.translateBy(x: s / 2, y: s / 2)
-    ctx.rotate(by: -.pi / 8)
     ctx.setShadow(offset: CGSize(width: 0, height: -s * 0.01), blur: s * 0.04, color: NSColor.black.withAlphaComponent(0.4).cgColor)
     ctx.setFillColor(NSColor(white: 0.97, alpha: 1).cgColor)
     ctx.fillEllipse(in: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r))
