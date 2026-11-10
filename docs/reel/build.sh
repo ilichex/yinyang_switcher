@@ -1,11 +1,18 @@
 #!/bin/zsh
 # Полная сборка рилса: голос → видео → звук → склейка.
-# Запуск из корня репозитория: zsh docs/reel/build.sh [голос: dmitri|denis|irina]
+# Запуск из корня репозитория: zsh docs/reel/build.sh [classic|goth ...]   (без аргументов — оба)
 set -e
 cd "$(dirname "$0")"
-.venv/bin/python tts.py "${1:-dmitri}"
-node render.mjs
-.venv/bin/python mix.py
-ffmpeg -y -loglevel error -i video-only.mp4 -i mix.wav -c:v copy -af loudnorm=I=-14:TP=-1.5:LRA=11 -ar 48000 -c:a aac -b:a 192k -shortest yinyang-reel.mp4
-ffmpeg -y -loglevel error -i video-only.mp4 -i voice_sfx.wav -c:v copy -af loudnorm=I=-14:TP=-1.5:LRA=11 -ar 48000 -c:a aac -b:a 192k -shortest yinyang-reel-no-music.mp4
-echo "готово: docs/reel/yinyang-reel.mp4 (с музыкой) и yinyang-reel-no-music.mp4 (голос + эффекты)"
+mux() {  # видео + звук, громкость под соцсети (−14 LUFS)
+  ffmpeg -y -loglevel error -i "video-$1.mp4" -i "$2" -c:v copy -af loudnorm=I=-14:TP=-1.5:LRA=11 \
+    -ar 48000 -c:a aac -b:a 192k -shortest "$3"
+}
+variants=("$@"); (( $#variants )) || variants=(classic goth)
+for v in $variants; do
+  .venv/bin/python tts.py "$v"
+  VARIANT=$v node render.mjs
+  .venv/bin/python mix.py "$v"
+  mux "$v" "mix-$v.wav" "yinyang-reel-$v.mp4"
+  [[ $v == classic ]] && mux classic voice_sfx-classic.wav yinyang-reel-classic-no-music.mp4
+  echo "готово: docs/reel/yinyang-reel-$v.mp4"
+done

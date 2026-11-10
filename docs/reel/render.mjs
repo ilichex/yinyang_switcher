@@ -14,23 +14,27 @@ const FPS = 30;
 const browser = await chromium.launch({ channel: 'chrome' });
 const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
 // длительности реплик из tts.py → сцены подстраиваются под голос
-const voiceFile = path.join(dir, 'voice.json');
+// вариант (classic|goth) — из переменной окружения VARIANT
+const variant = process.env.VARIANT || 'classic';
+const voiceFile = path.join(dir, `voice-${variant}.json`);
+await page.addInitScript(`window.THEME = ${JSON.stringify(variant)};`);
 if (fs.existsSync(voiceFile)) await page.addInitScript(`window.VOICE = ${fs.readFileSync(voiceFile, 'utf8')};`);
 await page.goto('file://' + path.join(dir, 'reel.html'));
+await page.evaluate(() => document.fonts.ready);
 // таймлайн событий для mix.py
-fs.writeFileSync(path.join(dir, 'timeline.json'), JSON.stringify(await page.evaluate(() => TIMELINE), null, 1));
+fs.writeFileSync(path.join(dir, `timeline-${variant}.json`), JSON.stringify(await page.evaluate(() => TIMELINE), null, 1));
 
 const preview = process.argv.slice(2).map(Number);
 if (preview.length) {
   for (const t of preview) {
     await page.evaluate(t => render(t), t);
-    await page.screenshot({ path: path.join(dir, `preview-${t}.png`) });
+    await page.screenshot({ path: path.join(dir, `preview-${variant}-${t}.png`) });
   }
 } else {
   const total = Math.round((await page.evaluate(() => DURATION)) * FPS);
-  const out = path.join(dir, 'video-only.mp4');
+  const out = path.join(dir, `video-${variant}.mp4`);
   const ff = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', String(FPS), '-i', '-',
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-preset', 'medium', '-movflags', '+faststart', out],
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', variant === 'goth' ? '26' : '18', '-preset', 'medium', '-movflags', '+faststart', out],
     { stdio: ['pipe', 'ignore', 'inherit'] });
   for (let i = 0; i < total; i++) {
     await page.evaluate(t => render(t), i / FPS);

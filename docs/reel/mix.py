@@ -1,12 +1,16 @@
 # Звук рилса: синтезирует бит и эффекты по timeline.json, кладёт голос из audio/*.wav,
 # приглушает музыку под голосом (ducking). Своя музыка — никаких проблем с правами.
 # Выход: mix.wav (всё) и voice_sfx.wav (без музыки — чтобы подложить трек в Instagram).
-import json, os, wave
+# Запуск: .venv/bin/python mix.py classic|goth
+# goth: без бита (кавер подкладывается в Instagram), колокола, реверберация на голосе, тихий гул в до миноре.
+import json, os, sys, wave
 import numpy as np
 
 SR = 48000
 here = os.path.dirname(os.path.abspath(__file__))
-tl = json.load(open(os.path.join(here, 'timeline.json')))
+variant = sys.argv[1] if len(sys.argv) > 1 else 'classic'
+GOTH = variant == 'goth'
+tl = json.load(open(os.path.join(here, f'timeline-{variant}.json')))
 N = int((tl['duration'] + 0.3) * SR)
 rng = np.random.default_rng(7)
 
@@ -38,7 +42,25 @@ drop = next(e['t'] for e in tl['events'] if e['type'] == 'boom')  # бит ст�
 CHORDS = [  # бас, аккорд: Am – F – C – G
     (33, [57, 60, 64]), (29, [53, 57, 60]), (36, [55, 60, 64]), (31, [55, 59, 62])]
 bar = 4 * beat
-nbars = int(tl['duration'] / bar) + 1
+nbars = 0 if GOTH else int(tl['duration'] / bar) + 1
+if GOTH:  # тихий гул: до + соль, медленно «дышит»
+    t = np.arange(N) / SR
+    music += (np.sin(2 * np.pi * 32.7 * t) + 0.6 * np.sin(2 * np.pi * 49.0 * t) + 0.25 * np.sin(2 * np.pi * 65.4 * t)) \
+        * (0.6 + 0.4 * np.sin(2 * np.pi * t / 6)) * np.minimum(1, t / 2) * 0.12
+
+def bell(f, dur, decay):  # неровные обертоны — звучит как колокол
+    n = int(dur * SR)
+    return sum(a * tone(f * r, dur) * env(n, decay / (1 + k)) for k, (r, a) in
+               enumerate([(1, 1), (2.76, 0.5), (5.4, 0.25), (8.93, 0.12)]))
+
+def reverb(x, sec=1.8, wet=0.3):  # свёртка с затухающим шумом через FFT
+    n = int(sec * SR)
+    ir = rng.standard_normal(n) * env(n, sec / 5)
+    ir = smooth(ir, 6); ir /= np.sqrt((ir ** 2).sum())
+    m = 1 << int(np.ceil(np.log2(len(x) + n)))
+    y = np.fft.irfft(np.fft.rfft(x, m) * np.fft.rfft(ir, m), m)[: len(x)]
+    return x * (1 - wet) + y * wet * 3
+
 for b in range(nbars):
     root, chord = CHORDS[b % 4]
     t0 = b * bar
@@ -73,6 +95,14 @@ sfx = np.zeros(N)
 def noise(dur): return rng.standard_normal(int(dur * SR))
 for e in tl['events']:
     t, ty = e['t'], e['type']
+    if GOTH and ty in ('pop', 'ding', 'spin'):  # вместо «попов» — колокола
+        f = {'pop': 110 * 2 ** (e.get('i', 0) / 12 * 3), 'ding': 523.25, 'spin': 65.4}[ty]
+        add(sfx, t, bell(f, 2.0, 0.9), 0.22 if ty != 'spin' else 0.35)
+        continue
+    if GOTH and ty == 'key':  # пишущая машинка: ниже и громче
+        n = int(0.03 * SR)
+        add(sfx, t, smooth(rng.standard_normal(n), 3) * env(n, 0.006) + tone(180, 0.03) * env(n, 0.01) * 0.5, 0.4)
+        continue
     if ty == 'key':
         n = int(0.012 * SR)
         add(sfx, t, np.diff(rng.standard_normal(n + 1)) * env(n, 0.003) + tone(2400, 0.012) * env(n, 0.002) * 0.3, 0.22)
@@ -83,7 +113,7 @@ for e in tl['events']:
     elif ty in ('whoosh', 'spin'):
         d = 0.45 if ty == 'whoosh' else 0.3
         n = int(d * SR)
-        x = smooth(noise(d), 12) * np.sin(np.pi * np.arange(n) / n) ** 2
+        x = smooth(noise(d), 40 if GOTH else 12) * np.sin(np.pi * np.arange(n) / n) ** 2 * (2 if GOTH else 1)
         add(sfx, t - d / 2, x, 0.5 if ty == 'whoosh' else 0.25)
     elif ty == 'riser':
         d = drop - t
@@ -105,7 +135,7 @@ for e in tl['events']:
 voice = np.zeros(N)
 for e in tl['events']:
     if e['type'] != 'voice': continue
-    with wave.open(os.path.join(here, 'audio', f"{e['id']}.wav")) as w:
+    with wave.open(os.path.join(here, 'audio', variant, f"{e['id']}.wav")) as w:
         sr = w.getframerate()
         x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16) / 32768
     x = np.interp(np.arange(int(len(x) * SR / sr)) * sr / SR, np.arange(len(x)), x)  # пересэмплинг в 48 кГц
@@ -125,6 +155,10 @@ def save(name, x):
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
         w.writeframes((x * 32767).astype(np.int16).tobytes())
 
-save('mix.wav', master((music * duck * 0.55 + sfx * 0.7 + voice) * fade))
-save('voice_sfx.wav', master((sfx * 0.7 + voice) * fade))
+if GOTH:
+    voice = reverb(voice, 2.2, 0.28)
+    sfx = reverb(sfx, 3.0, 0.4)
+save(f'mix-{variant}.wav', master((music * duck * 0.55 + sfx * 0.7 + voice) * fade))
+if not GOTH:
+    save('voice_sfx-classic.wav', master((sfx * 0.7 + voice) * fade))
 print('звук готов:', round(N / SR, 1), 'с')
