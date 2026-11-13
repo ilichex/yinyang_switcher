@@ -68,6 +68,16 @@ public struct Detector {
     }
 
     public func decide(_ token: String, context: DetectionContext) -> Decision {
+        let envelope = TokenEnvelope(token)
+        if !envelope.prefix.isEmpty {
+            var decision = decide(envelope.body, context: context)
+            switch decision.action {
+            case .replace(let text): decision.action = .replace(envelope.wrap(text))
+            case .pending(let text): decision.action = .pending(envelope.wrap(text))
+            case .keep: break
+            }
+            return decision
+        }
         guard let typed = LayoutMap.detectLang(token), !Self.looksLikeCode(token) else { return .keep(nil) }
         let other = typed.other
         let inverted = map.convert(token, to: other)

@@ -174,7 +174,14 @@ public final class TypingSession {
     }
 
     public func type(_ s: String) {
-        chars.append(contentsOf: s)
+        if chars.isEmpty, let first = s.unicodeScalars.first,
+           [.nonspacingMark, .spacingMark, .enclosingMark, .format].contains(first.properties.generalCategory) {
+            // Этот знак может присоединиться к символу, которого нет в нашей памяти.
+            cursorMoved()
+            return
+        }
+        // Отдельное нажатие может дописать акцент или часть emoji к предыдущему символу.
+        chars = Array(String(chars) + s)
         lastFix = nil
     }
 
@@ -183,7 +190,8 @@ public final class TypingSession {
         guard !chars.isEmpty else { return cursorMoved() }
         chars.removeLast()
         lastFix = nil
-        pending.removeAll { $0.end > chars.count }
+        // Стирание разделителя снова делает отложенное слово текущим.
+        pending.removeAll { $0.end >= chars.count }
         manualEnd = manualEnd.map { min($0, chars.count) }
     }
 
@@ -207,6 +215,8 @@ public final class TypingSession {
         let start = wordStart
         let token = String(chars[start...])
         guard !token.isEmpty else { return nil }
+        // Отложенное слово должно целиком предшествовать текущему, даже после составного ввода.
+        pending.removeAll { $0.end > start }
         let isTail = continuesHiddenWord(token, start: start)
         jump = nil
         if isTail {
@@ -320,11 +330,24 @@ public final class TypingSession {
     /// Сверить память с текстом перед курсором (строка до курсора, как её видит программа).
     /// Совпадает — оставляем: там больше сведений. Нет (кликнули в другое место, macOS что-то
     /// заменила) — верим экрану: так последнее слово можно поменять в любой момент.
-    public func sync(withScreen line: String) {
+    public func sync(withScreen line: String, allowIncompleteWord: Bool = false) {
         let line = String(line.split(separator: "\n", omittingEmptySubsequences: false).last ?? "").suffix(Self.maxLength)
         let shown = Array(line)
         if !chars.isEmpty, shown.count >= chars.count,
            zip(shown.suffix(chars.count), chars).allSatisfy({ TextEdit.sameOnScreen($0, $1) }) { return }
+        // Accessibility иногда ещё не видит последние нажатия. Не укорачиваем слово:
+        // иначе из шести букв сотрём пять и оставим лишнюю первую букву.
+        if allowIncompleteWord, !chars.isEmpty, !Self.boundaries.contains(chars.last!) {
+            let start = wordStart
+            for missing in 1...(chars.count - start) {
+                let visible = chars.dropLast(missing)
+                guard shown.count >= visible.count else { continue }
+                if zip(shown.suffix(visible.count), visible).allSatisfy({ TextEdit.sameOnScreen($0, $1) }) {
+                    // Пустой префикс допустим только на пустом экране.
+                    if !visible.isEmpty || shown.isEmpty { return }
+                }
+            }
+        }
         reset(keepContext: true)
         chars = Array(line)
     }
@@ -359,7 +382,7 @@ public final class TypingSession {
 
     /// Принудительно поменять раскладку последнего слова (клавиша без выделения).
     /// Слово может быть недописанным, с пробелами после него или из букв обеих раскладок.
-    public func invertLastWord() -> (edit: TextEdit, change: WordChange)? {
+    public func invertLastWord(sourceLang: Lang? = nil) -> (edit: TextEdit, change: WordChange)? {
         var end = chars.count
         // Пробелы после слова (один, два — неважно) остаются как есть.
         while end > 0, chars[end - 1] == " " { end -= 1 }
@@ -367,7 +390,7 @@ public final class TypingSession {
         let start = (chars[..<end].lastIndex(where: { Self.boundaries.contains($0) }) ?? -1) + 1
         guard start < end else { return nil }
         let token = String(chars[start..<end])
-        guard let (inverted, target) = invert(token) else { return nil }
+        guard let (inverted, target) = invert(token, sourceLang: sourceLang), inverted != token else { return nil }
 
         chars.replaceSubrange(start..., with: inverted + tail)
         pending.removeAll()
@@ -375,7 +398,7 @@ public final class TypingSession {
         manualEnd = chars.count
         let change = WordChange(key: detector.key(for: token), from: target.other, to: target)
         // Хвост чужого слова словом не считаем: меняем по просьбе, но запоминать нечего.
-        let teaches = !(start == 0 && jump == .keys)
+        let teaches = LayoutMap.detectLang(token) != nil && !(start == 0 && jump == .keys)
         lastWordTeaches = teaches
         lastFix = Fix(
             kind: .manual, start: start, original: token, replaced: inverted, changes: teaches ? [change] : [],
@@ -392,12 +415,19 @@ public final class TypingSession {
     /// которой слово начинается. Знак в конце оставляем знаком, если без него слово
     /// настоящее, а с ним — нет: «ghbdtn.» → «привет.», «привет.» → «ghbdtn.»,
     /// но «k.,k.» → «люблю».
-    func invert(_ token: String) -> (String, Lang)? {
+    func invert(_ token: String, sourceLang: Lang? = nil) -> (String, Lang)? {
+        let envelope = TokenEnvelope(token)
+        if !envelope.prefix.isEmpty, let (text, lang) = invert(envelope.body, sourceLang: sourceLang) {
+            return (envelope.wrap(text), lang)
+        }
         let target: Lang
         if let typed = LayoutMap.detectLang(token) {
             target = typed.other
         } else {
             let letters = token.unicodeScalars.compactMap { LayoutMap.detectLang(String($0)) }
+            if letters.isEmpty, let sourceLang {
+                return detector.map.invertSymbols(token, from: sourceLang).map { ($0, sourceLang.other) }
+            }
             guard let first = letters.first else { return nil }
             if isWord(detector.map.convert(token, to: .ru), .ru) { target = .ru }
             else if isWord(detector.map.convert(token, to: .en), .en) { target = .en }

@@ -29,7 +29,8 @@ public struct SmartConverter {
         _ text: String,
         category: AppCategory = .other,
         learned: (String) -> Verdict? = { _ in nil },
-        typed: Bool = false
+        typed: Bool = false,
+        sourceLang: Lang? = nil
     ) -> Result? {
         let tokens = Self.split(text)
         var output = tokens.map(\.text)
@@ -79,6 +80,12 @@ public struct SmartConverter {
         }
 
         if changes.isEmpty {
+            if !typed, let sourceLang, !text.contains(where: \.isLetter) {
+                let symbols = tokens.map { token in
+                    token.isSeparator ? token.text : detector.map.invertSymbols(token.text, from: sourceLang) ?? token.text
+                }.joined()
+                if symbols != text { return Result(text: symbols, changes: [], lang: sourceLang.other) }
+            }
             // Умно менять нечего — инвертируем всё (для выделенного) или ничего (для набранного).
             guard !typed, let lang = LayoutMap.detectLang(text) ?? tokens.lazy.compactMap({ LayoutMap.detectLang($0.text) }).first else {
                 return nil
@@ -87,7 +94,7 @@ public struct SmartConverter {
             let converted = tokens.map { token -> String in
                 guard !token.isSeparator, let from = LayoutMap.detectLang(token.text) else { return token.text }
                 all.append(WordChange(key: detector.key(for: token.text), from: from, to: from.other))
-                return detector.map.convert(token.text, to: from.other)
+                return detector.map.convertWord(token.text, to: from.other)
             }.joined()
             return Result(text: converted, changes: all, lang: lang.other)
         }

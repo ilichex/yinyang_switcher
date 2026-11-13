@@ -32,6 +32,28 @@ public struct LayoutMap: Sendable {
         return String(s.map { table[$0] ?? $0 })
     }
 
+    func convertWord(_ text: String, to target: Lang) -> String {
+        let envelope = TokenEnvelope(text)
+        return envelope.wrap(convert(envelope.body, to: target))
+    }
+
+    /// Только явная ручная команда: знаки без букв требуют исходной раскладки.
+    /// Время и десятичные числа не меняем; у «50,5:» меняем лишь конечный знак.
+    func invertSymbols(_ token: String, from source: Lang) -> String? {
+        guard !token.isEmpty, !token.contains(where: { $0.isLetter || $0.isWhitespace }) else { return nil }
+        let converted: String
+        if token.contains(where: \.isNumber) {
+            let number = token.prefix { $0.isNumber || ".,+-−".contains($0) }
+            let marks = token.dropFirst(number.count)
+            guard number.contains(where: \.isNumber), !marks.isEmpty,
+                  !marks.contains(where: \.isNumber) else { return nil }
+            converted = String(number) + convert(String(marks), to: source.other)
+        } else {
+            converted = convert(token, to: source.other)
+        }
+        return converted == token ? nil : converted
+    }
+
     /// Символ, который даст та же клавиша в другой раскладке.
     public func counterpart(of c: Character, to target: Lang) -> Character? {
         (target == .ru ? enToRu : ruToEn)[c]
