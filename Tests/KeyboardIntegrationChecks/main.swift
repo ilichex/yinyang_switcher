@@ -28,6 +28,68 @@ monitor.updateTarget(200)
 check(session.undoLastFix()?.edit.insert == "ghbdtn", "В новой программе не работает повторная отмена")
 print("PASS: смена приложения и повторная отмена")
 
+do {
+    let session = TypingSession(detector: detector)
+    let monitor = KeyboardMonitor(session: session)
+    monitor.applicationActivated(100)
+    monitor.updateTarget(200) // Поиск поверх окна приложения 100.
+    session.type("ghbdtn")
+    monitor.applicationActivated(100) // Повторное уведомление о том же фоне.
+    check(monitor.prepareHotkeyTarget(200, fallback: 100) == 200, "Команда ушла в окно под поиском")
+    check(session.text == "ghbdtn", "Активное окно стёрло память поиска")
+    check(session.invertLastWord()?.edit == TextEdit(removed: "ghbdtn", insert: "привет", switchTo: .ru),
+          "Поиск не получил полную инверсию слова")
+    check(monitor.prepareHotkeyTarget(200, fallback: 100) == 200, "Повторная команда потеряла поиск")
+    check(session.undoLastFix()?.edit.insert == "ghbdtn", "Отмена инверсии в поиске потеряла слово")
+}
+
+do {
+    let session = TypingSession(detector: detector)
+    let monitor = KeyboardMonitor(session: session)
+    monitor.applicationActivated(100)
+    session.type("старый текст")
+    monitor.applicationActivated(200)
+    check(session.text.isEmpty, "Обычная смена программы оставила чужой текст")
+    monitor.updateTarget(300)
+    session.type("ghbdtn")
+    check(monitor.prepareHotkeyTarget(0, fallback: 200) == 300, "Неизвестный PID команды заменил известного получателя поиска")
+    monitor.applicationActivated(300) // Получатель набора активировался с задержкой.
+    check(session.text == "ghbdtn", "Запоздалая активация получателя стёрла текст")
+    monitor.applicationActivated(400)
+    check(session.text.isEmpty, "Настоящий переход из поиска оставил старый запрос")
+    monitor.prepareHotkeyTarget(0, fallback: 400)
+    check(monitor.lastTarget == 400, "Неизвестный PID восстановил запрос закрытого поиска")
+    session.type("новый текст")
+    monitor.prepareHotkeyTarget(500, fallback: 400)
+    check(session.text.isEmpty, "Новый получатель команды не сбросил старый текст")
+    monitor.prepareHotkeyTarget(0, fallback: 400)
+    check(monitor.lastTarget == 400, "Без набора не выбран получатель выделения")
+    session.type("ещё текст")
+    monitor.prepareHotkeyTarget(0, fallback: 600) // Новая программа, уведомление ещё не пришло.
+    check(session.text.isEmpty, "Неизвестный PID оставил текст предыдущей активной программы")
+}
+
+do {
+    let session = TypingSession(detector: detector)
+    let monitor = KeyboardMonitor(session: session)
+    var contextTarget: Int64 = 0
+    monitor.onTarget = { contextTarget = $0 }
+    monitor.applicationActivated(100)
+    monitor.updateTarget(200)
+    monitor.prepareHotkeyTarget(200, fallback: 100)
+    check(contextTarget == 200, "Контекст ручной команды не принадлежит поиску")
+    monitor.updateTarget(100) // Панель закрылась без новой активации окна под ней.
+    check(contextTarget == 100, "После закрытия поиска остался его контекст")
+    contextTarget = 300 // Позднее уведомление изменило настройки.
+    monitor.updateTarget(100)
+    check(contextTarget == 100, "Обычный ввод не восстановил контекст своего получателя")
+}
+
+let ownElement = AXUIElementCreateApplication(getpid())
+check(SelectionReader.belongsToTarget(ownElement, targetPID: Int64(getpid())), "Не принят собственный AX-элемент")
+check(!SelectionReader.belongsToTarget(ownElement, targetPID: Int64(getpid()) + 1), "Принят AX-элемент другого процесса")
+print("PASS: панель поиска, фоновое окно и проверка владельца Accessibility")
+
 // Локальное текстовое поле: никакие события в систему не отправляются.
 let view = NSTextView(frame: .zero)
 let examples = ["ghbdtn", "🙂 ghbdtn", "👨‍👩‍👧‍👦 ghbdtn", "e\u{301} ghbdtn"]

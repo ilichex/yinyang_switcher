@@ -9,7 +9,8 @@ final class KeyboardMonitor {
     let session: TypingSession
     var isActive: () -> Bool = { true }
     var onEdit: (TextEdit) -> Void = { _ in }
-    var onHotkey: () -> Void = {}
+    var onHotkey: (Int64) -> Void = { _ in }
+    var onTarget: (Int64) -> Void = { _ in }
     var hotkey: Hotkey = .default {
         didSet { taps = TapDetector(count: hotkey.count) }
     }
@@ -33,6 +34,7 @@ final class KeyboardMonitor {
     private var recorder = ShortcutRecorder()
     /// Программа, в которую ушло последнее нажатие.
     private(set) var lastTarget: Int64 = 0
+    private var frontmostTarget: Int64 = 0
     /// Любое действие человека отменяет ожидающую операцию с выделением.
     private(set) var inputRevision: UInt64 = 0
     private var lastTypingAt = -TimeInterval.infinity
@@ -46,10 +48,30 @@ final class KeyboardMonitor {
     }
 
     func updateTarget(_ target: Int64) {
-        guard target != 0, target != lastTarget else { return }
+        guard target > 0 else { return }
+        onTarget(target)
+        guard target != lastTarget else { return }
         lastTarget = target
         inputRevision &+= 1
         session.reset()
+    }
+
+    /// Панель поиска может принимать ввод, не становясь активным приложением.
+    @discardableResult
+    func prepareHotkeyTarget(_ eventTarget: Int64, fallback: Int64?) -> Int64 {
+        if eventTarget > 0 {
+            updateTarget(eventTarget)
+        } else if let fallback, session.text.isEmpty || lastTarget == frontmostTarget {
+            updateTarget(fallback)
+        }
+        if lastTarget > 0 { onTarget(lastTarget) }
+        return lastTarget
+    }
+
+    func applicationActivated(_ target: Int64) {
+        guard target > 0, target != frontmostTarget else { return }
+        frontmostTarget = target
+        updateTarget(target)
     }
 
     var isRunning: Bool { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false }
@@ -155,15 +177,16 @@ final class KeyboardMonitor {
         if flags.contains(flag) {
             taps.press(at: now)
         } else if taps.release(at: now) {
-            scheduleHotkey()
+            scheduleHotkey(event)
         }
     }
 
-    private func scheduleHotkey() {
+    private func scheduleHotkey(_ event: CGEvent) {
         let revision = inputRevision
+        let target = event.getIntegerValueField(.eventTargetUnixProcessID)
         DispatchQueue.main.async {
             guard self.inputRevision == revision else { return }
-            self.onHotkey()
+            self.onHotkey(target)
         }
     }
 
@@ -174,7 +197,7 @@ final class KeyboardMonitor {
         // Автоповтор при удержании — не новое нажатие.
         if event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
            taps.keyPress(at: ProcessInfo.processInfo.systemUptime) {
-            scheduleHotkey()
+            scheduleHotkey(event)
         }
         return true
     }
@@ -199,12 +222,12 @@ final class KeyboardMonitor {
             }
             return nil
         }
-        if handleFunctionHotkey(code, event) { return nil }
-        taps.interrupt()
         // Нажатие пришло в другую программу — всё, что помнили, относится к прошлой.
         // Уведомление macOS о смене программы приходит позже первых букв, поэтому смотрим здесь.
         let target = event.getIntegerValueField(.eventTargetUnixProcessID)
         updateTarget(target)
+        if handleFunctionHotkey(code, event) { return nil }
+        taps.interrupt()
 
         guard isActive(), !IsSecureEventInputEnabled() else {
             // Поле пароля или выключено: ничего не запоминаем.
@@ -269,7 +292,7 @@ final class KeyboardMonitor {
 
     private func boundary(_ separator: Character, _ event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
         guard let planned = session.boundary(separator) else { return Unmanaged.passUnretained(event) }
-        guard let edit = TextInjector.checked(planned) else {
+        guard let edit = TextInjector.checked(planned, targetPID: lastTarget) else {
             // Текст поменяли без нас — не трогаем и начинаем с чистого листа.
             session.reset(keepContext: true)
             return Unmanaged.passUnretained(event)

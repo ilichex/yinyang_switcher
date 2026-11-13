@@ -3,7 +3,13 @@ import Carbon
 
 /// Выделенный текст в активной программе.
 enum SelectionReader {
-    static func focusedElement() -> AXUIElement? {
+    static func belongsToTarget(_ element: AXUIElement, targetPID: Int64?) -> Bool {
+        guard let targetPID, targetPID > 0 else { return true }
+        var owner: pid_t = 0
+        return AXUIElementGetPid(element, &owner) == .success && Int64(owner) == targetPID
+    }
+
+    static func focusedElement(targetPID: Int64? = nil) -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, 0.05)
         var focused: CFTypeRef?
@@ -11,6 +17,7 @@ enum SelectionReader {
               let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
         let element = focused as! AXUIElement
         AXUIElementSetMessagingTimeout(element, 0.05)
+        guard belongsToTarget(element, targetPID: targetPID) else { return nil }
         return element
     }
 
@@ -30,8 +37,8 @@ enum SelectionReader {
         case unsupported
     }
 
-    static func viaAccessibility() -> AXResult {
-        guard let element = focusedElement() else { return .unsupported }
+    static func viaAccessibility(targetPID: Int64? = nil) -> AXResult {
+        guard let element = focusedElement(targetPID: targetPID) else { return .unsupported }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value) == .success,
               let text = value as? String else { return .unsupported }
@@ -40,15 +47,8 @@ enum SelectionReader {
 
     /// Текст перед курсором, `count` символов UTF-16 (или меньше у начала документа).
     /// nil — программа не говорит (Electron, терминалы) или что-то выделено: проверить нечем.
-    static func textBeforeCursor(_ count: Int) -> String? {
-        let system = AXUIElementCreateSystemWide()
-        // Зависшая программа не должна держать клавиатуру: ждём её не дольше 50 мс.
-        AXUIElementSetMessagingTimeout(system, 0.05)
-        var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
-        let element = focused as! AXUIElement
-        AXUIElementSetMessagingTimeout(element, 0.05)
+    static func textBeforeCursor(_ count: Int, targetPID: Int64? = nil) -> String? {
+        guard let element = focusedElement(targetPID: targetPID) else { return nil }
         var rangeValue: CFTypeRef?
         var selection = CFRange()
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,

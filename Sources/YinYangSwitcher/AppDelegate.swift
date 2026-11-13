@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         context.update(NSWorkspace.shared.frontmostApplication)
+        if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier { monitor.applicationActivated(Int64(front)) }
         session.category = context.category
         session.learned = { [unowned self] key in
             store.verdict(key: key, app: context.bundleID, category: context.category)
@@ -54,21 +55,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [unowned self] note in
-            context.update(note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            if let app { monitor.applicationActivated(Int64(app.processIdentifier)) }
+            context.update(app)
             session.category = context.category
         }
 
+        monitor.onTarget = { [unowned self] target in
+            if let app = NSRunningApplication(processIdentifier: pid_t(target)) { context.update(app) }
+            session.category = context.category
+        }
         monitor.hotkey = context.hotkey
         monitor.isActive = { [unowned self] in context.isActive && sources.currentLang != nil }
         monitor.onEdit = { [unowned self] edit in
             if let lang = edit.switchTo { sources.select(lang) }
             icon.spin()
         }
-        monitor.onHotkey = { [unowned self] in hotkey() }
+        monitor.onHotkey = { [unowned self] target in hotkey(eventTarget: target) }
         // В терминалах и редакторах кода курсор для Accessibility бывает не там, где ввод.
         session.letterBefore = { [unowned self] token in
             guard context.category != .code,
-                  let screen = SelectionReader.textBeforeCursor(token.utf16.count + 1) else { return nil }
+                  let screen = SelectionReader.textBeforeCursor(token.utf16.count + 1, targetPID: monitor.lastTarget) else { return nil }
             return TypingSession.letterBefore(token, inScreen: screen)
         }
         // По умолчанию ⌥⌘ — быстро выключить и включить обратно, не открывая меню.
@@ -129,13 +136,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 3) иначе — исправить набранную фразу: только слова, похожие на набранные не в той
     ///    раскладке; если таких нет — поменять раскладку последнего слова.
     /// Каждое ручное действие — голос в обучение: два раза — и слово запомнено.
-    private func hotkey() {
+    private func hotkey(eventTarget: Int64) {
         // В поле пароля ничего не печатаем и буфер обмена не трогаем.
-        guard context.isActive, sources.currentLang != nil, !IsSecureEventInputEnabled() else { return }
-        // С последнего нажатия переключились в другую программу — её текста мы не знаем.
-        if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier { monitor.updateTarget(Int64(front)) }
+        guard !IsSecureEventInputEnabled() else { return }
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let target = monitor.prepareHotkeyTarget(eventTarget, fallback: front.map(Int64.init))
+        guard context.isActive, sources.currentLang != nil else { return }
         if let (planned, fix) = session.undoLastFix() {
-            guard let edit = TextInjector.checked(planned) else { return mismatch() }
+            guard let edit = TextInjector.checked(planned, targetPID: target) else { return mismatch() }
             TextInjector.apply(edit)
             if let lang = edit.switchTo { sources.select(lang) }
             // Голос — только за первую отмену; дальше это просто переключение туда-обратно.
@@ -145,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             icon.spin()
             return
         }
-        switch SelectionReader.viaAccessibility() {
+        switch SelectionReader.viaAccessibility(targetPID: target) {
         case .text(let selection) where !selection.isEmpty:
             convertSelection(selection)
         case .text:
@@ -156,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if convertTyped() { return }
             let revision = monitor.inputRevision
             let target = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            let focused = SelectionReader.focusedElement()
+            let focused = SelectionReader.focusedElement(targetPID: monitor.lastTarget)
             let range = focused.flatMap { SelectionReader.selectionRange(in: $0) }
             let isCurrent = { [self] in
                 guard monitor.inputRevision == revision, context.isActive, sources.currentLang != nil,
@@ -197,11 +205,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // бывает не там, где ввод, — там верим только памяти.
         // После Backspace старый снимок может, наоборот, содержать уже стёртые буквы.
         if context.category != .code, !monitor.hasRecentDeletion,
-           let line = SelectionReader.textBeforeCursor(TypingSession.maxLength) {
+           let line = SelectionReader.textBeforeCursor(TypingSession.maxLength, targetPID: monitor.lastTarget) {
             session.sync(withScreen: line, allowIncompleteWord: monitor.hasRecentTyping)
         }
         if let (planned, changes) = session.convertPhrase(smart) {
-            guard let edit = TextInjector.checked(planned) else {
+            guard let edit = TextInjector.checked(planned, targetPID: monitor.lastTarget) else {
                 mismatch()
                 return true
             }
@@ -216,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func invertLastWord() -> Bool {
         guard let (planned, change) = session.invertLastWord(sourceLang: sources.currentLang) else { return false }
-        guard let edit = TextInjector.checked(planned) else {
+        guard let edit = TextInjector.checked(planned, targetPID: monitor.lastTarget) else {
             mismatch()
             return true
         }

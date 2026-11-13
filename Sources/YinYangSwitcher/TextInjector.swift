@@ -12,10 +12,10 @@ enum TextInjector {
     /// Перед курсором то, что мы собираемся стереть? Сверяем, только если правка задевает
     /// уже законченные слова — их могла поменять автозамена. Программа не отвечает — верим себе.
     /// nil — на экране другое, править нельзя.
-    static func checked(_ edit: TextEdit) -> TextEdit? {
+    static func checked(_ edit: TextEdit, targetPID: Int64? = nil) -> TextEdit? {
         guard edit.maxLag < edit.deleteCount else { return edit }
         let lag = edit.removed.suffix(edit.maxLag).utf16.count
-        guard let screen = SelectionReader.textBeforeCursor(edit.removed.utf16.count + lag) else { return edit }
+        guard let screen = SelectionReader.textBeforeCursor(edit.removed.utf16.count + lag, targetPID: targetPID) else { return edit }
         return edit.adjusted(toScreen: screen)
     }
 
