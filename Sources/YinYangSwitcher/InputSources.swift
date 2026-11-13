@@ -57,6 +57,20 @@ final class InputSources {
         }
     }
 
+    /// Русская ↔ английская; с любой другой раскладки — на английскую.
+    func toggle() {
+        let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
+        select(current.flatMap { Self.primaryLanguage($0) } == "en" ? .ru : .en)
+    }
+
+    /// Нажатие 🌐 в системе уже переключает раскладку сама («Клавиатура» → «Нажатие клавиши 🌐»).
+    /// Тогда нам вмешиваться нельзя: раскладка переключилась бы дважды, то есть осталась бы прежней.
+    static var systemHandlesGlobe: Bool {
+        let value = CFPreferencesCopyAppValue("AppleFnUsageType" as CFString, "com.apple.HIToolbox" as CFString)
+        // Нет значения — стоит «Переключать источник ввода» (по умолчанию); 1 — тоже она.
+        return (value as? Int).map { $0 == 1 } ?? true
+    }
+
     private func updateCurrent() {
         // Любая подтверждённая смена раскладки делает старый повтор ненужным.
         selectionRevision &+= 1

@@ -14,6 +14,13 @@ final class AppContext {
         set { defaults.set(newValue, forKey: "enabled") }
     }
 
+    /// Мгновенное переключение раскладки по fn (🌐). Работает, только если сама система
+    /// на эту клавишу ничего не делает.
+    var globeSwitch: Bool {
+        get { defaults.object(forKey: "globeSwitch") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "globeSwitch") }
+    }
+
     var disabledApps: Set<String> {
         get { Set(defaults.stringArray(forKey: "disabledApps") ?? []) }
         set { defaults.set(Array(newValue).sorted(), forKey: "disabledApps") }

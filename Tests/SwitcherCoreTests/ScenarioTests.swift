@@ -428,6 +428,19 @@ import SwitcherCore
         #expect(session.invertLastWord()?.edit.insert == "люблю")
     }
 
+    @Test func percentTypedInRussianLayout() {
+        let session = TypingSession(detector: detector)
+        session.type("скидка 99:")
+        let r = session.invertLastWord()
+        #expect(r?.edit.removed == "99:")
+        #expect(r?.edit.insert == "99%")
+        #expect(r?.edit.switchTo == .en)
+        // Время и обычные числа не трогаем.
+        let other = TypingSession(detector: detector)
+        other.type("10:30")
+        #expect(other.invertLastWord() == nil)
+    }
+
     @Test func consistentMemoryIsKept() {
         let session = TypingSession(detector: detector)
         session.type("rbyj")

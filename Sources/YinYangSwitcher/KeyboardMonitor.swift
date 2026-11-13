@@ -22,6 +22,9 @@ final class KeyboardMonitor {
         didSet { chord = ChordDetector(target: toggle?.keyCode == nil ? toggle?.modifiers ?? 0 : 0) }
     }
     var onToggle: () -> Void = {}
+    /// fn (🌐) нажали и отпустили без других клавиш.
+    var onGlobe: () -> Void = {}
+    private var globeArmed = false
     /// Пока задано — записываем новое сочетание «включить/выключить». nil в ответ — Esc.
     var onRecordShortcut: ((Shortcut?) -> Void)? {
         didSet { recorder = ShortcutRecorder() }
@@ -168,6 +171,18 @@ final class KeyboardMonitor {
         if chord.flags(modifiers, at: ProcessInfo.processInfo.systemUptime) {
             DispatchQueue.main.async { self.onToggle() }
         }
+        // fn (🌐), нажатый и отпущенный без других клавиш, — переключить раскладку сразу.
+        // fn+стрелка и fn+F-клавиша не в счёт: там fn лишь меняет значение другой клавиши.
+        if code == kVK_Function, !hotkey.keyCodes.contains(kVK_Function) {
+            if flags.contains(.maskSecondaryFn) {
+                globeArmed = flags.intersection(Self.modifierMask).isEmpty
+            } else if globeArmed {
+                globeArmed = false
+                DispatchQueue.main.async { self.onGlobe() }
+            }
+        } else {
+            globeArmed = false
+        }
         guard let flag = hotkey.flag, hotkey.keyCodes.contains(code),
               flags.intersection(Self.modifierMask).subtracting(flag).isEmpty else {
             taps.interrupt()
@@ -215,6 +230,7 @@ final class KeyboardMonitor {
             return nil
         }
         chord.interrupt()
+        globeArmed = false
         if let toggle, toggle.keyCode == code, toggle.modifiers == modifiers {
             // Автоповтор при удержании — не новое нажатие.
             if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {

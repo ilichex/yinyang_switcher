@@ -428,6 +428,10 @@ public final class TypingSession {
             if letters.isEmpty, let sourceLang {
                 return detector.map.invertSymbols(token, from: sourceLang).map { ($0, sourceLang.other) }
             }
+            // «99:» — это «99%», набранное в русской раскладке (Shift+5 даёт там двоеточие).
+            if letters.isEmpty, token.count > 1, token.last == ":", token.dropLast().allSatisfy(\.isNumber) {
+                return (token.dropLast() + "%", .en)
+            }
             guard let first = letters.first else { return nil }
             if isWord(detector.map.convert(token, to: .ru), .ru) { target = .ru }
             else if isWord(detector.map.convert(token, to: .en), .en) { target = .en }

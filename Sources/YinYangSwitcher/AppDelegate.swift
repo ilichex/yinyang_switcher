@@ -72,6 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             icon.spin()
         }
         monitor.onHotkey = { [unowned self] target in hotkey(eventTarget: target) }
+        monitor.onGlobe = { [unowned self] in
+            guard context.globeSwitch, !InputSources.systemHandlesGlobe else { return }
+            sources.toggle()
+            icon.spin()
+        }
         // В терминалах и редакторах кода курсор для Accessibility бывает не там, где ввод.
         session.letterBefore = { [unowned self] token in
             guard context.category != .code,
@@ -275,6 +280,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(enabled)
         menu.addItem(toggleItem())
         menu.addItem(hotkeyItem())
+        let globe = item("Мгновенное переключение по fn", #selector(toggleGlobe))
+        globe.state = context.globeSwitch ? .on : .off
+        menu.addItem(globe)
+        if context.globeSwitch, InputSources.systemHandlesGlobe {
+            menu.addItem(item("⚠️ fn: в настройках клавиатуры выберите «Ничего не делать»…", #selector(openKeyboardSettings)))
+        }
         menu.addItem(.separator())
 
         if !context.bundleID.isEmpty {
@@ -557,6 +568,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }
+    }
+
+    @objc private func toggleGlobe() {
+        context.globeSwitch.toggle()
+    }
+
+    @objc private func openKeyboardSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
     }
 
     @objc private func openAccessibilitySettings() {
