@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         monitor.hotkey = context.hotkey
-        monitor.isActive = { [unowned self] in context.isActive && sources.currentIsSupported }
+        monitor.isActive = { [unowned self] in context.isActive && sources.currentLang != nil }
         monitor.onEdit = { [unowned self] edit in
             if let lang = edit.switchTo { sources.select(lang) }
             icon.spin()
@@ -131,11 +131,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Каждое ручное действие — голос в обучение: два раза — и слово запомнено.
     private func hotkey() {
         // В поле пароля ничего не печатаем и буфер обмена не трогаем.
-        guard context.isActive, !IsSecureEventInputEnabled() else { return }
+        guard context.isActive, sources.currentLang != nil, !IsSecureEventInputEnabled() else { return }
         // С последнего нажатия переключились в другую программу — её текста мы не знаем.
-        if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, Int64(front) != monitor.lastTarget {
-            session.reset()
-        }
+        if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier { monitor.updateTarget(Int64(front)) }
         if let (planned, fix) = session.undoLastFix() {
             guard let edit = TextInjector.checked(planned) else { return mismatch() }
             TextInjector.apply(edit)
@@ -156,14 +154,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Только что набранное важнее: ⌘C без выделения в некоторых
             // редакторах копирует всю строку.
             if convertTyped() { return }
-            SelectionReader.viaClipboard { [self] selection in
+            let revision = monitor.inputRevision
+            let target = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let focused = SelectionReader.focusedElement()
+            let range = focused.flatMap { SelectionReader.selectionRange(in: $0) }
+            let isCurrent = { [self] in
+                guard monitor.inputRevision == revision, context.isActive, sources.currentLang != nil,
+                      !IsSecureEventInputEnabled(),
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == target else { return false }
+                if let focused {
+                    guard let current = SelectionReader.focusedElement(), CFEqual(focused, current) else { return false }
+                    if let range, let currentRange = SelectionReader.selectionRange(in: current) {
+                        guard range.location == currentRange.location, range.length == currentRange.length else { return false }
+                    }
+                }
+                return true
+            }
+            SelectionReader.viaClipboard(ifCurrent: isCurrent) { [self] selection in
+                guard isCurrent() else { return }
                 if let selection { convertSelection(selection) } else { NSSound.beep() }
             }
         }
     }
 
     private func convertSelection(_ selection: String) {
-        guard let result = smart.convert(selection, category: context.category, learned: session.learned) else {
+        guard let result = smart.convert(selection, category: context.category, learned: session.learned,
+                                       sourceLang: sources.currentLang) else {
             return NSSound.beep()
         }
         TextInjector.type(result.text)
@@ -179,8 +195,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Память могла разойтись с экраном (клик в другое место, замена от macOS) — сверяемся,
         // если программа отвечает. В терминалах и редакторах кода курсор для Accessibility
         // бывает не там, где ввод, — там верим только памяти.
-        if context.category != .code, let line = SelectionReader.textBeforeCursor(TypingSession.maxLength) {
-            session.sync(withScreen: line)
+        // После Backspace старый снимок может, наоборот, содержать уже стёртые буквы.
+        if context.category != .code, !monitor.hasRecentDeletion,
+           let line = SelectionReader.textBeforeCursor(TypingSession.maxLength) {
+            session.sync(withScreen: line, allowIncompleteWord: monitor.hasRecentTyping)
         }
         if let (planned, changes) = session.convertPhrase(smart) {
             guard let edit = TextInjector.checked(planned) else {
@@ -197,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func invertLastWord() -> Bool {
-        guard let (planned, change) = session.invertLastWord() else { return false }
+        guard let (planned, change) = session.invertLastWord(sourceLang: sources.currentLang) else { return false }
         guard let edit = TextInjector.checked(planned) else {
             mismatch()
             return true

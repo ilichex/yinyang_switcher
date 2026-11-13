@@ -3,6 +3,26 @@ import Carbon
 
 /// Выделенный текст в активной программе.
 enum SelectionReader {
+    static func focusedElement() -> AXUIElement? {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.05)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = focused as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.05)
+        return element
+    }
+
+    static func selectionRange(in element: AXUIElement) -> CFRange? {
+        var value: CFTypeRef?
+        var range = CFRange()
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID(),
+              AXValueGetValue(value as! AXValue, .cfRange, &range), range.location >= 0 else { return nil }
+        return range
+    }
+
     enum AXResult {
         /// Пустая строка — программа ответила, что ничего не выделено.
         case text(String)
@@ -11,12 +31,8 @@ enum SelectionReader {
     }
 
     static func viaAccessibility() -> AXResult {
-        let system = AXUIElementCreateSystemWide()
-        var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return .unsupported }
+        guard let element = focusedElement() else { return .unsupported }
         var value: CFTypeRef?
-        let element = focused as! AXUIElement
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value) == .success,
               let text = value as? String else { return .unsupported }
         return .text(text)
@@ -50,17 +66,20 @@ enum SelectionReader {
     }
 
     /// Копирует через ⌘C и возвращает буфер обмена как был.
-    static func viaClipboard(_ completion: @escaping (String?) -> Void) {
+    static func viaClipboard(ifCurrent: @escaping () -> Bool = { true }, _ completion: @escaping (String?) -> Void) {
+        let hasSelection = focusedElement().flatMap { selectionRange(in: $0) }.map { $0.length > 0 } ?? false
         let pasteboard = NSPasteboard.general
         let saved = Clipboard.save(pasteboard)
         let before = pasteboard.changeCount
         TextInjector.press(CGKeyCode(kVK_ANSI_C), flags: .maskCommand)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            // После нового действия человек мог скопировать другой текст: его буфер важнее.
+            guard ifCurrent() else { return completion(nil) }
             guard pasteboard.changeCount != before else { return completion(nil) }
             let copied = pasteboard.string(forType: .string)
             Clipboard.restore(saved, to: pasteboard)
             // Без выделения некоторые редакторы (VS Code) копируют всю строку с переводом строки.
-            guard let copied, !copied.isEmpty, !copied.hasSuffix("\n") else { return completion(nil) }
+            guard let copied, !copied.isEmpty, hasSelection || !copied.hasSuffix("\n") else { return completion(nil) }
             completion(copied)
         }
     }

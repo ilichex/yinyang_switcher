@@ -126,6 +126,7 @@ fn или F-клавиша, одно, два или три нажатия.
 ./scripts/build-app.sh      # build/YinYang.app
 ./scripts/make-dmg.sh       # build/YinYang.dmg (Apple Silicon + Intel)
 swift run core-tests        # тесты логики
+./scripts/test-keyboard.sh  # нативные проверки AppKit без глобальных нажатий
 ```
 
 Чтобы доступ не слетал после каждой пересборки, один раз создайте бесплатный

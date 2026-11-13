@@ -19,14 +19,14 @@ enum TextInjector {
         return edit.adjusted(toScreen: screen)
     }
 
-    static func apply(_ edit: TextEdit) {
+    static func apply(_ edit: TextEdit, proxy: CGEventTapProxy? = nil) {
         for _ in 0..<edit.deleteCount {
-            press(backspaceKey)
+            press(backspaceKey, proxy: proxy)
         }
-        type(edit.insert)
+        type(edit.insert, proxy: proxy)
     }
 
-    static func type(_ text: String) {
+    static func type(_ text: String, proxy: CGEventTapProxy? = nil) {
         // По символу на событие: длинные строки в одном событии понимают не все программы.
         for c in text {
             let utf16 = Array(String(c).utf16)
@@ -34,22 +34,27 @@ enum TextInjector {
                 guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
                 event.flags = []
                 event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-                post(event)
+                post(event, proxy: proxy)
             }
         }
     }
 
-    static func press(_ key: CGKeyCode, flags: CGEventFlags = []) {
+    static func press(_ key: CGKeyCode, flags: CGEventFlags = [], proxy: CGEventTapProxy? = nil) {
         for down in [true, false] {
             guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { continue }
             event.flags = flags
-            post(event)
+            post(event, proxy: proxy)
         }
     }
 
-    static func post(_ event: CGEvent) {
+    static func post(_ event: CGEvent, proxy: CGEventTapProxy? = nil) {
         event.setIntegerValueField(.eventSourceUserData, value: marker)
-        event.post(tap: .cghidEventTap)
+        if let proxy {
+            // Внутри перехватчика продолжаем текущий поток, не возвращаемся в его начало.
+            event.tapPostEvent(proxy)
+        } else {
+            event.post(tap: .cghidEventTap)
+        }
     }
 
     static func isOurs(_ event: CGEvent) -> Bool {

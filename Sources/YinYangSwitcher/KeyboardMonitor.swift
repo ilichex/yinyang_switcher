@@ -33,10 +33,23 @@ final class KeyboardMonitor {
     private var recorder = ShortcutRecorder()
     /// Программа, в которую ушло последнее нажатие.
     private(set) var lastTarget: Int64 = 0
+    /// Любое действие человека отменяет ожидающую операцию с выделением.
+    private(set) var inputRevision: UInt64 = 0
+    private var lastTypingAt = -TimeInterval.infinity
+    private var lastDeletionAt = -TimeInterval.infinity
+    var hasRecentTyping: Bool { ProcessInfo.processInfo.systemUptime - lastTypingAt < 0.25 }
+    var hasRecentDeletion: Bool { ProcessInfo.processInfo.systemUptime - lastDeletionAt < 0.25 }
     private static let modifierMask: CGEventFlags = [.maskShift, .maskCommand, .maskControl, .maskAlternate]
 
     init(session: TypingSession) {
         self.session = session
+    }
+
+    func updateTarget(_ target: Int64) {
+        guard target != 0, target != lastTarget else { return }
+        lastTarget = target
+        inputRevision &+= 1
+        session.reset()
     }
 
     var isRunning: Bool { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false }
@@ -76,13 +89,28 @@ final class KeyboardMonitor {
 
     /// macOS выключает перехват, если обработчик долго думал; включаем обратно.
     func ensureEnabled() {
-        if let tap, !CGEvent.tapIsEnabled(tap: tap) { CGEvent.tapEnable(tap: tap, enable: true) }
+        if let tap, !CGEvent.tapIsEnabled(tap: tap) {
+            session.cursorMoved()
+            taps.interrupt()
+            chord.interrupt()
+            inputRevision &+= 1
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
     }
 
-    fileprivate func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+    fileprivate func handle(_ type: CGEventType, _ event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
+        if TextInjector.isOurs(event) { return pass }
+        if [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown].contains(type) {
+            inputRevision &+= 1
+        }
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            // Пока перехват был выключен, ввод мог пройти мимо нашей памяти.
+            session.cursorMoved()
+            taps.interrupt()
+            chord.interrupt()
+            inputRevision &+= 1
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return pass
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
@@ -96,7 +124,7 @@ final class KeyboardMonitor {
             return pass
         case .keyDown:
             if TextInjector.isOurs(event) { return pass }
-            return handleKey(event)
+            return handleKey(event, proxy: proxy)
         default:
             return pass
         }
@@ -127,7 +155,15 @@ final class KeyboardMonitor {
         if flags.contains(flag) {
             taps.press(at: now)
         } else if taps.release(at: now) {
-            DispatchQueue.main.async { self.onHotkey() }
+            scheduleHotkey()
+        }
+    }
+
+    private func scheduleHotkey() {
+        let revision = inputRevision
+        DispatchQueue.main.async {
+            guard self.inputRevision == revision else { return }
+            self.onHotkey()
         }
     }
 
@@ -138,12 +174,12 @@ final class KeyboardMonitor {
         // Автоповтор при удержании — не новое нажатие.
         if event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
            taps.keyPress(at: ProcessInfo.processInfo.systemUptime) {
-            DispatchQueue.main.async { self.onHotkey() }
+            scheduleHotkey()
         }
         return true
     }
 
-    private func handleKey(_ event: CGEvent) -> Unmanaged<CGEvent>? {
+    private func handleKey(_ event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let modifiers = event.flags.rawValue & Shortcut.allModifiers
@@ -168,10 +204,7 @@ final class KeyboardMonitor {
         // Нажатие пришло в другую программу — всё, что помнили, относится к прошлой.
         // Уведомление macOS о смене программы приходит позже первых букв, поэтому смотрим здесь.
         let target = event.getIntegerValueField(.eventTargetUnixProcessID)
-        if target != 0, target != lastTarget {
-            lastTarget = target
-            session.reset()
-        }
+        updateTarget(target)
 
         guard isActive(), !IsSecureEventInputEnabled() else {
             // Поле пароля или выключено: ничего не запоминаем.
@@ -185,6 +218,7 @@ final class KeyboardMonitor {
 
         switch code {
         case kVK_Delete:
+            lastDeletionAt = ProcessInfo.processInfo.systemUptime
             // ⌥⌫ стирает слово целиком, а где у слова граница — решает программа.
             // Стирать из памяти одну букву нельзя: остаток потом исправится вместе с новым словом.
             if event.flags.contains(.maskAlternate) {
@@ -194,11 +228,16 @@ final class KeyboardMonitor {
             }
             return pass
         case kVK_Space:
-            return boundary(" ", event)
+            // ⌥Space — неразрывный пробел, не обычный разделитель.
+            if event.flags.contains(.maskAlternate) {
+                session.cursorMoved()
+                return pass
+            }
+            return boundary(" ", event, proxy: proxy)
         case kVK_Return, kVK_ANSI_KeypadEnter:
-            return boundary("\n", event)
+            return boundary("\n", event, proxy: proxy)
         case kVK_Tab:
-            return boundary("\t", event)
+            return boundary("\t", event, proxy: proxy)
         case kVK_Escape, kVK_ForwardDelete:
             session.interrupted()
             return pass
@@ -207,6 +246,12 @@ final class KeyboardMonitor {
             session.cursorMoved()
             return pass
         default:
+            // Option может запускать составной ввод (dead key). По отдельным событиям
+            // нельзя узнать, сколько символов действительно появится в программе.
+            if event.flags.contains(.maskAlternate) {
+                session.cursorMoved()
+                return pass
+            }
             var length = 0
             var buffer = [UniChar](repeating: 0, count: 8)
             event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &buffer)
@@ -214,12 +259,15 @@ final class KeyboardMonitor {
             let printable = !text.isEmpty && !text.unicodeScalars.contains {
                 $0.value < 0x20 || (0xF700...0xF8FF).contains($0.value) // управляющие и F-клавиши
             }
-            if printable { session.type(text) } else { session.interrupted() }
+            if printable {
+                lastTypingAt = ProcessInfo.processInfo.systemUptime
+                session.type(text)
+            } else { session.interrupted() }
             return pass
         }
     }
 
-    private func boundary(_ separator: Character, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+    private func boundary(_ separator: Character, _ event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
         guard let planned = session.boundary(separator) else { return Unmanaged.passUnretained(event) }
         guard let edit = TextInjector.checked(planned) else {
             // Текст поменяли без нас — не трогаем и начинаем с чистого листа.
@@ -227,8 +275,8 @@ final class KeyboardMonitor {
             return Unmanaged.passUnretained(event)
         }
         // Разделитель придержали: сначала исправляем слово, потом допечатываем его сами.
-        TextInjector.apply(edit)
-        if let copy = event.copy() { TextInjector.post(copy) }
+        TextInjector.apply(edit, proxy: proxy)
+        if let copy = event.copy() { TextInjector.post(copy, proxy: proxy) }
         onEdit(edit)
         return nil
     }
@@ -239,5 +287,5 @@ private func keyboardCallback(
 ) -> Unmanaged<CGEvent>? {
     guard let refcon else { return Unmanaged.passUnretained(event) }
     let monitor = Unmanaged<KeyboardMonitor>.fromOpaque(refcon).takeUnretainedValue()
-    return monitor.handle(type, event)
+    return monitor.handle(type, event, proxy: proxy)
 }

@@ -6,9 +6,15 @@ final class InputSources {
     private(set) var ru: TISInputSource?
     private(set) var en: TISInputSource?
     private(set) var map: LayoutMap = .macRussian
-    /// Сейчас включена русская или английская раскладка. На любой другой (украинская,
-    /// японская, Dvorak с другим языком) программа молчит: её слова мы не понимаем.
-    private(set) var currentIsSupported = true
+    /// Поддерживается только та пара источников ввода, для которой построена карта.
+    var currentLang: Lang? {
+        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let identifier = Self.identifier(current) else { return nil }
+        if identifier == en.flatMap(Self.identifier) { return .en }
+        if identifier == ru.flatMap(Self.identifier) { return .ru }
+        return nil
+    }
+    private var selectionRevision: UInt64 = 0
 
     init() {
         reload()
@@ -36,19 +42,29 @@ final class InputSources {
 
     func select(_ lang: Lang) {
         guard let source = lang == .ru ? ru : en else { return }
+        selectionRevision &+= 1
+        let revision = selectionRevision
+        let previous = (TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()).flatMap(Self.identifier)
         TISSelectInputSource(source)
         // Изредка macOS не применяет переключение сразу — тогда следующие буквы шли бы
         // в старой раскладке. Проверяем и повторяем.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            guard let self, let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-                  Self.primaryLanguage(current) != lang.rawValue else { return }
+            guard let self, self.selectionRevision == revision,
+                  let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                  Self.identifier(current) != Self.identifier(source),
+                  Self.identifier(current) == previous else { return }
             TISSelectInputSource(source)
         }
     }
 
     private func updateCurrent() {
-        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return }
-        currentIsSupported = ["ru", "en"].contains(Self.primaryLanguage(current))
+        // Любая подтверждённая смена раскладки делает старый повтор ненужным.
+        selectionRevision &+= 1
+    }
+
+    private static func identifier(_ source: TISInputSource) -> String? {
+        guard let raw = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return nil }
+        return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
     }
 
     private static func primaryLanguage(_ source: TISInputSource) -> String? {
