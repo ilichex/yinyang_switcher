@@ -8,6 +8,7 @@ import SwitcherCore
 final class KeyboardMonitor {
     let session: TypingSession
     var isActive: () -> Bool = { true }
+    var allowsAutomatic: () -> Bool = { true }
     var onEdit: (TextEdit) -> Void = { _ in }
     var onHotkey: (Int64) -> Void = { _ in }
     var onTarget: (Int64) -> Void = { _ in }
@@ -64,7 +65,7 @@ final class KeyboardMonitor {
     func prepareHotkeyTarget(_ eventTarget: Int64, fallback: Int64?) -> Int64 {
         if eventTarget > 0 {
             updateTarget(eventTarget)
-        } else if let fallback, session.text.isEmpty || lastTarget == frontmostTarget {
+        } else if let fallback, session.text.isEmpty || lastTarget == frontmostTarget || fallback != frontmostTarget {
             updateTarget(fallback)
         }
         if lastTarget > 0 { onTarget(lastTarget) }
@@ -307,7 +308,7 @@ final class KeyboardMonitor {
     }
 
     private func boundary(_ separator: Character, _ event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
-        guard let planned = session.boundary(separator) else { return Unmanaged.passUnretained(event) }
+        guard let planned = session.boundary(separator, allowsAutomatic: allowsAutomatic()) else { return Unmanaged.passUnretained(event) }
         guard let edit = TextInjector.checked(planned, targetPID: lastTarget) else {
             // Текст поменяли без нас — не трогаем и начинаем с чистого листа.
             session.reset(keepContext: true)

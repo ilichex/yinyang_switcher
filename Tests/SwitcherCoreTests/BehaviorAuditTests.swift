@@ -17,6 +17,18 @@ private func auditDetector() -> Detector {
 }
 
 @Suite struct BehaviorAudit {
+    @Test func automaticCorrectionCanPauseWhileManualCorrectionKeepsTracking() {
+        let detector = auditDetector()
+        let session = TypingSession(detector: detector)
+        session.type("ghbdtn")
+        #expect(session.boundary(" ", allowsAutomatic: false) == nil)
+        #expect(session.text == "ghbdtn ")
+        let edit = session.invertLastWord()?.edit
+        #expect(edit?.removed == "ghbdtn ")
+        #expect(edit?.insert == "привет ")
+        #expect(session.undoLastFix()?.edit.insert == "ghbdtn ")
+    }
+
     @Test func erasedPendingSeparatorBecomesPartOfCurrentWord() {
         let session = TypingSession(detector: auditDetector())
         session.type("b")

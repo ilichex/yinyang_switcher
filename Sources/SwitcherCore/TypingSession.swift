@@ -201,7 +201,7 @@ public final class TypingSession {
 
     /// Пользователь нажал пробел, Enter или Tab. Если вернулась правка — её надо
     /// применить до того, как символ-разделитель попадёт в программу.
-    public func boundary(_ separator: Character) -> TextEdit? {
+    public func boundary(_ separator: Character, allowsAutomatic: Bool = true) -> TextEdit? {
         defer {
             chars.append(separator)
             if separator != " " {
@@ -219,7 +219,7 @@ public final class TypingSession {
         pending.removeAll { $0.end > start }
         let isTail = continuesHiddenWord(token, start: start)
         jump = nil
-        if isTail {
+        if !allowsAutomatic || isTail {
             pending.removeAll()
             return nil
         }

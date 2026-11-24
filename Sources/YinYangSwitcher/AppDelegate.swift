@@ -41,16 +41,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.autosaveName = "YinYang"
         icon = StatusIcon(button: statusItem.button!)
-        icon.dimmed = !context.enabled
+        icon.dimmed = !context.automaticCorrectionEnabled
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
 
         context.update(NSWorkspace.shared.frontmostApplication)
         if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier { monitor.applicationActivated(Int64(front)) }
-        session.category = context.category
         session.learned = { [unowned self] key in
-            store.verdict(key: key, app: context.bundleID, category: context.category)
+            store.verdict(key: key, app: context.bundleID, category: .other)
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -58,15 +57,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             if let app { monitor.applicationActivated(Int64(app.processIdentifier)) }
             context.update(app)
-            session.category = context.category
         }
 
         monitor.onTarget = { [unowned self] target in
             if let app = NSRunningApplication(processIdentifier: pid_t(target)) { context.update(app) }
-            session.category = context.category
         }
         monitor.hotkey = context.hotkey
         monitor.isActive = { [unowned self] in context.isActive && sources.currentLang != nil }
+        monitor.allowsAutomatic = { [unowned self] in context.automaticCorrectionEnabled }
         monitor.onEdit = { [unowned self] edit in
             if let lang = edit.switchTo { sources.select(lang) }
             icon.spin()
@@ -77,9 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sources.toggle()
             icon.spin()
         }
-        // В терминалах и редакторах кода курсор для Accessibility бывает не там, где ввод.
+        // В поиске приложений сверка с экраном может отставать от ввода.
         session.letterBefore = { [unowned self] token in
-            guard context.category != .code,
+            guard !context.usesTrackedText,
                   let screen = SelectionReader.textBeforeCursor(token.utf16.count + 1, targetPID: monitor.lastTarget) else { return nil }
             return TypingSession.letterBefore(token, inScreen: screen)
         }
@@ -93,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for word in ["ghbdtn", "руддщ"] { _ = detector.decide(word, context: DetectionContext()) }
 
         startWhenPermitted()
+        registerLoginByDefault()
         updater.start()
     }
 
@@ -148,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let target = monitor.prepareHotkeyTarget(eventTarget, fallback: front.map(Int64.init))
         guard context.isActive, sources.currentLang != nil else { return }
         if let (planned, fix) = session.undoLastFix() {
-            guard let edit = TextInjector.checked(planned, targetPID: target) else { return mismatch() }
+            guard let edit = checkedManualEdit(planned, targetPID: target) else { return mismatch() }
             TextInjector.apply(edit)
             if let lang = edit.switchTo { sources.select(lang) }
             // Голос — только за первую отмену; дальше это просто переключение туда-обратно.
@@ -191,7 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func convertSelection(_ selection: String) {
-        guard let result = smart.convert(selection, category: context.category, learned: session.learned,
+        guard let result = smart.convert(selection, category: .other, learned: session.learned,
                                        sourceLang: sources.currentLang) else {
             return NSSound.beep()
         }
@@ -206,15 +205,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Набранное без выделения: сначала вся фраза, потом последнее слово. false — менять нечего.
     private func convertTyped() -> Bool {
         // Память могла разойтись с экраном (клик в другое место, замена от macOS) — сверяемся,
-        // если программа отвечает. В терминалах и редакторах кода курсор для Accessibility
-        // бывает не там, где ввод, — там верим только памяти.
+        // если программа отвечает достоверно.
         // После Backspace старый снимок может, наоборот, содержать уже стёртые буквы.
-        if context.category != .code, !monitor.hasRecentDeletion,
+        if !context.usesTrackedText, !monitor.hasRecentDeletion,
            let line = SelectionReader.textBeforeCursor(TypingSession.maxLength, targetPID: monitor.lastTarget) {
             session.sync(withScreen: line, allowIncompleteWord: monitor.hasRecentTyping)
         }
         if let (planned, changes) = session.convertPhrase(smart) {
-            guard let edit = TextInjector.checked(planned, targetPID: monitor.lastTarget) else {
+            guard let edit = checkedManualEdit(planned, targetPID: monitor.lastTarget) else {
                 mismatch()
                 return true
             }
@@ -229,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func invertLastWord() -> Bool {
         guard let (planned, change) = session.invertLastWord(sourceLang: sources.currentLang) else { return false }
-        guard let edit = TextInjector.checked(planned, targetPID: monitor.lastTarget) else {
+        guard let edit = checkedManualEdit(planned, targetPID: monitor.lastTarget) else {
             mismatch()
             return true
         }
@@ -240,6 +238,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    private func checkedManualEdit(_ edit: TextEdit, targetPID: Int64) -> TextEdit? {
+        if context.usesTrackedText { return edit }
+        return TextInjector.checked(edit, targetPID: targetPID)
+    }
+
     /// На экране не то, что мы помним: стирать вслепую нельзя.
     private func mismatch() {
         session.reset(keepContext: true)
@@ -247,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func vote(_ key: String, _ lang: Lang) {
-        store.vote(key: key, lang: lang, app: context.bundleID, category: context.category)
+        store.vote(key: key, lang: lang, app: context.bundleID, category: .other)
     }
 
     // MARK: - Меню
@@ -275,8 +278,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(disabled("⚠️ Запущен \(rival) — выключите один из свитчеров"))
         }
 
-        let enabled = item("Исправлять раскладку", #selector(toggleEnabled))
-        enabled.state = context.enabled ? .on : .off
+        let enabled = item("Автоисправление раскладки", #selector(toggleEnabled))
+        enabled.state = context.automaticCorrectionEnabled ? .on : .off
         menu.addItem(enabled)
         menu.addItem(toggleItem())
         menu.addItem(hotkeyItem())
@@ -290,18 +293,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if !context.bundleID.isEmpty {
             menu.addItem(disabled("Сейчас: \(context.appName)"))
-            let categoryItem = NSMenuItem(title: "Текущий режим: \(context.category.title)", action: nil, keyEquivalent: "")
-            let categories = NSMenu()
-            for category in AppCategory.allCases {
-                let c = item(category.title, #selector(setCategory(_:)))
-                c.representedObject = category.rawValue
-                c.state = category == context.category ? .on : .off
-                categories.addItem(c)
-            }
-            categoryItem.submenu = categories
-            menu.addItem(categoryItem)
-            let skip = item("Не исправлять в \(context.appName)", #selector(toggleApp))
-            skip.state = context.disabledApps.contains(context.bundleID) ? .on : .off
+            let skip = item("Не исправлять в \(context.appName)", #selector(toggleApp(_:)))
+            skip.representedObject = context.bundleID
+            skip.state = context.isActive ? .off : .on
+            if context.isNeverApp { skip.action = nil }
             menu.addItem(skip)
             menu.addItem(.separator())
         }
@@ -309,7 +304,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(rulesItem())
         menu.addItem(.separator())
         let login = item("Запускать при входе", #selector(toggleLogin))
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        let loginStatus = SMAppService.mainApp.status
+        login.state = loginStatus == .enabled ? .on : .off
+        if loginStatus == .requiresApproval {
+            login.title = "Разрешить автозапуск в настройках macOS…"
+        }
         menu.addItem(login)
         menu.addItem(updatesItem())
         menu.addItem(item("Выйти", #selector(NSApplication.terminate(_:)), key: "q"))
@@ -374,7 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func toggleItem() -> NSMenuItem {
         let current = context.toggleShortcut
-        let root = NSMenuItem(title: "Вкл/выкл сочетанием: \(current?.title ?? "не задано")", action: nil, keyEquivalent: "")
+        let root = NSMenuItem(title: "Переключать автоисправление: \(current?.title ?? "не задано")", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         var choices = Shortcut.presets
         if let current, !choices.contains(where: { $0.shortcut == current }) {
@@ -391,7 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         off.state = current == nil ? .on : .off
         submenu.addItem(off)
         submenu.addItem(.separator())
-        submenu.addItem(disabled("У выключенного YinYang в строке меню — половина значка"))
+        submenu.addItem(disabled("Половина значка — автоисправление выключено"))
         root.submenu = submenu
         return root
     }
@@ -438,22 +437,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleEnabled() {
-        context.enabled.toggle()
-        icon.dimmed = !context.enabled
+        context.automaticCorrectionEnabled.toggle()
+        icon.dimmed = !context.automaticCorrectionEnabled
         session.reset()
     }
 
-    @objc private func toggleApp() {
+    @objc private func toggleApp(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
         var apps = context.disabledApps
-        if apps.remove(context.bundleID) == nil { apps.insert(context.bundleID) }
+        if apps.remove(id) == nil { apps.insert(id) }
         context.disabledApps = apps
         session.reset()
-    }
-
-    @objc private func setCategory(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let category = AppCategory(rawValue: raw) else { return }
-        context.setCategory(category, for: context.bundleID)
-        session.category = category
     }
 
     private func setHotkey(_ hotkey: Hotkey) {
@@ -555,13 +549,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.removeAll()
     }
 
+    private let loginConfiguredKey = "loginItemConfigured"
+
+    private func registerLoginByDefault() {
+        let path = Bundle.main.bundleURL.standardizedFileURL.path
+        let homeApps = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications").path
+        guard path.hasPrefix("/Applications/") || path.hasPrefix(homeApps + "/"),
+              !UserDefaults.standard.bool(forKey: loginConfiguredKey) else { return }
+        let service = SMAppService.mainApp
+        switch service.status {
+        case .notRegistered:
+            do { try service.register() } catch { return }
+        case .enabled, .requiresApproval:
+            break
+        default:
+            return
+        }
+        UserDefaults.standard.set(true, forKey: loginConfiguredKey)
+    }
+
     @objc private func toggleLogin() {
+        if SMAppService.mainApp.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+            return
+        }
         do {
             if SMAppService.mainApp.status == .enabled {
                 try SMAppService.mainApp.unregister()
             } else {
                 try SMAppService.mainApp.register()
             }
+            UserDefaults.standard.set(true, forKey: loginConfiguredKey)
         } catch {
             let alert = NSAlert()
             alert.messageText = "Не получилось включить автозапуск"

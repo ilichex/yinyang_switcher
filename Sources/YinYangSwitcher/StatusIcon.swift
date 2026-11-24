@@ -22,7 +22,7 @@ final class StatusIcon {
     }
 
     private func updateTip() {
-        let state = dimmed ? "YinYang выключен" : "YinYang исправляет раскладку"
+        let state = dimmed ? "Автоисправление выключено" : "Автоисправление включено"
         let action = dimmed ? "включить" : "выключить"
         button.toolTip = shortcutTitle.map { "\(state) · \($0) — \(action)" } ?? state
     }
