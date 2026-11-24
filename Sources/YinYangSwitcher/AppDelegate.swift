@@ -147,8 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let target = monitor.prepareHotkeyTarget(eventTarget, fallback: front.map(Int64.init))
         guard context.isActive, sources.currentLang != nil else { return }
         if let (planned, fix) = session.undoLastFix() {
-            guard let edit = checkedManualEdit(planned, targetPID: target) else { return mismatch() }
-            TextInjector.apply(edit)
+            guard let edit = applyManualEdit(planned, targetPID: target) else { return mismatch() }
             if let lang = edit.switchTo { sources.select(lang) }
             // Голос — только за первую отмену; дальше это просто переключение туда-обратно.
             if !fix.isRepeat {
@@ -159,7 +158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         switch SelectionReader.viaAccessibility(targetPID: target) {
         case .text(let selection) where !selection.isEmpty:
-            convertSelection(selection)
+            if context.usesTrackedText, SelectionReader.searchHasCompletion(after: session.text, targetPID: target) {
+                if !convertTyped() { NSSound.beep() }
+            } else {
+                convertSelection(selection)
+            }
         case .text:
             if !convertTyped() { NSSound.beep() }
         case .unsupported:
@@ -212,11 +215,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             session.sync(withScreen: line, allowIncompleteWord: monitor.hasRecentTyping)
         }
         if let (planned, changes) = session.convertPhrase(smart) {
-            guard let edit = checkedManualEdit(planned, targetPID: monitor.lastTarget) else {
+            guard let edit = applyManualEdit(planned, targetPID: monitor.lastTarget) else {
                 mismatch()
                 return true
             }
-            TextInjector.apply(edit)
             if let lang = edit.switchTo { sources.select(lang) }
             for change in changes { vote(change.key, change.to) }
             icon.spin()
@@ -227,20 +229,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func invertLastWord() -> Bool {
         guard let (planned, change) = session.invertLastWord(sourceLang: sources.currentLang) else { return false }
-        guard let edit = checkedManualEdit(planned, targetPID: monitor.lastTarget) else {
+        guard let edit = applyManualEdit(planned, targetPID: monitor.lastTarget) else {
             mismatch()
             return true
         }
-        TextInjector.apply(edit)
         if let lang = edit.switchTo { sources.select(lang) }
         if session.lastWordTeaches { vote(change.key, change.to) }
         icon.spin()
         return true
     }
 
-    private func checkedManualEdit(_ edit: TextEdit, targetPID: Int64) -> TextEdit? {
-        if context.usesTrackedText { return edit }
-        return TextInjector.checked(edit, targetPID: targetPID)
+    private func applyManualEdit(_ edit: TextEdit, targetPID: Int64) -> TextEdit? {
+        if context.usesTrackedText {
+            TextInjector.replaceSearchText(edit, targetPID: targetPID)
+            return edit
+        }
+        guard let checked = TextInjector.checked(edit, targetPID: targetPID) else { return nil }
+        TextInjector.apply(checked)
+        return checked
     }
 
     /// На экране не то, что мы помним: стирать вслепую нельзя.

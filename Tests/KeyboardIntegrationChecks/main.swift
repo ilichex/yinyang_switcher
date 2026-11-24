@@ -103,6 +103,26 @@ for original in examples {
 }
 print("PASS: удаление Unicode в AppKit (4 сценария)")
 
+do {
+    let view = NSTextView(frame: .zero)
+    for (query, replacement, suggestion) in [(":", "%", "часы"), ("%", ":", "калькулятор"), ("фыв", "asd", "поиск")] {
+        for completion in ["", suggestion] {
+            let prefix = "🙂 "
+            view.string = prefix + query + completion
+            let cursor = CFRange(location: (prefix + query).utf16.count, length: completion.utf16.count)
+            guard let range = SelectionReader.searchReplacementRange(in: view.string, selection: cursor, removing: query) else {
+                fatalError("Поле поиска не выделило диапазон замены")
+            }
+            view.setSelectedRange(NSRange(location: range.location, length: range.length))
+            view.insertText(replacement, replacementRange: view.selectedRange())
+            check(view.string == prefix + replacement, "Первый символ или подсказка остались после замены")
+        }
+    }
+    let differentQuery = SelectionReader.searchReplacementRange(in: "abc", selection: CFRange(location: 3, length: 0), removing: ":")
+    check(differentQuery == nil, "Диапазон замены захватил другой текст")
+}
+print("PASS: замена запроса с подсказкой и без неё")
+
 // Именованный буфер изолирован от NSPasteboard.general пользователя.
 let pasteboard = NSPasteboard(name: .init("YinYangTests-" + UUID().uuidString))
 let customType = NSPasteboard.PasteboardType("org.yinyang.test-data")

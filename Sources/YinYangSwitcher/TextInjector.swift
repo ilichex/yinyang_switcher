@@ -1,3 +1,4 @@
+import Carbon
 import CoreGraphics
 import SwitcherCore
 
@@ -24,6 +25,21 @@ enum TextInjector {
             press(backspaceKey, proxy: proxy)
         }
         type(edit.insert, proxy: proxy)
+    }
+
+    static func replaceSearchText(_ edit: TextEdit, targetPID: Int64) {
+        // Подсказка поиска может поглотить первый Backspace. Вводим поверх выделения.
+        switch SelectionReader.prepareSearchSelection(edit.removed, targetPID: targetPID) {
+        case .selected:
+            break
+        case .selectAll:
+            press(CGKeyCode(kVK_ANSI_A), flags: .maskCommand)
+        case .selectSuffix:
+            for _ in 0..<edit.deleteCount {
+                press(CGKeyCode(kVK_LeftArrow), flags: .maskShift)
+            }
+        }
+        type(edit.insert)
     }
 
     static func type(_ text: String, proxy: CGEventTapProxy? = nil) {

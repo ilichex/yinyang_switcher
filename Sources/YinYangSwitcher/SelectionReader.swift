@@ -45,6 +45,47 @@ enum SelectionReader {
         return .text(text)
     }
 
+    static func searchHasCompletion(after typed: String, targetPID: Int64) -> Bool {
+        guard !typed.isEmpty, let field = searchField(targetPID: targetPID), field.selection.length > 0 else {
+            return false
+        }
+        return searchReplacementRange(in: field.value, selection: field.selection, removing: typed) != nil
+    }
+
+    enum SearchSelection {
+        case selected, selectAll, selectSuffix
+    }
+
+    static func prepareSearchSelection(_ removed: String, targetPID: Int64) -> SearchSelection {
+        guard let field = searchField(targetPID: targetPID),
+              var range = searchReplacementRange(in: field.value, selection: field.selection, removing: removed),
+              let value = AXValueCreate(.cfRange, &range) else { return .selectSuffix }
+        if AXUIElementSetAttributeValue(field.element, kAXSelectedTextRangeAttribute as CFString, value) == .success {
+            return .selected
+        }
+        return range.location == 0 && range.length == field.value.utf16.count ? .selectAll : .selectSuffix
+    }
+
+    static func searchReplacementRange(in value: String, selection: CFRange, removing removed: String) -> CFRange? {
+        let text = value as NSString
+        let count = removed.utf16.count
+        guard count > 0, selection.location >= count, selection.location <= text.length,
+              selection.length >= 0, selection.length <= text.length - selection.location,
+              selection.length == 0 || selection.length == text.length - selection.location else { return nil }
+        let start = selection.location - count
+        guard text.substring(with: NSRange(location: start, length: count)) == removed else { return nil }
+        return CFRange(location: start, length: count + selection.length)
+    }
+
+    private static func searchField(targetPID: Int64) -> (element: AXUIElement, value: String, selection: CFRange)? {
+        guard let element = focusedElement(targetPID: targetPID),
+              let selection = selectionRange(in: element) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
+              let text = value as? String else { return nil }
+        return (element, text, selection)
+    }
+
     /// Текст перед курсором, `count` символов UTF-16 (или меньше у начала документа).
     /// nil — программа не говорит (Electron, терминалы) или что-то выделено: проверить нечем.
     static func textBeforeCursor(_ count: Int, targetPID: Int64? = nil) -> String? {
