@@ -99,6 +99,24 @@ private func auditDetector() -> Detector {
         #expect(edit?.insert == "привет")
     }
 
+    @Test func repeatedInversionDoesNotLeaveFirstLetterOfSearchQuery() throws {
+        let session = TypingSession(detector: auditDetector())
+        session.type("фыв")
+        session.sync(withScreen: "фы", allowIncompleteWord: true)
+
+        var query = "фыв"
+        for (step, expected) in ["asd", "фыв", "asd", "фыв", "asd"].enumerated() {
+            let planned = step == 0
+                ? session.invertLastWord(sourceLang: .ru)?.edit
+                : session.undoLastFix()?.edit
+            let edit = try #require(planned)
+            try #require(edit.removed == query)
+            query.removeLast(edit.deleteCount)
+            query += edit.insert
+            #expect(query == expected)
+        }
+    }
+
     @Test func recentSnapshotMayContainUntrackedPrefixAndLaggingWord() {
         let session = TypingSession(detector: auditDetector())
         session.type("ghbdtn")
