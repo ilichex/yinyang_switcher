@@ -204,8 +204,9 @@ public final class TypingSession {
     public func boundary(_ separator: Character, allowsAutomatic: Bool = true) -> TextEdit? {
         defer {
             chars.append(separator)
-            if separator != " " {
-                // После Enter/Tab сообщение может уже уйти — старое не трогаем.
+            if separator == "\n" {
+                // После Enter сообщение может уже уйти — старое не трогаем.
+                // После Tab слово остаётся в буфере, чтобы ручная инверсия его нашла.
                 reset(keepContext: true)
             } else if chars.count > Self.maxLength {
                 reset(keepContext: true)
@@ -384,8 +385,8 @@ public final class TypingSession {
     /// Слово может быть недописанным, с пробелами после него или из букв обеих раскладок.
     public func invertLastWord(sourceLang: Lang? = nil) -> (edit: TextEdit, change: WordChange)? {
         var end = chars.count
-        // Пробелы после слова (один, два — неважно) остаются как есть.
-        while end > 0, chars[end - 1] == " " { end -= 1 }
+        // Пробелы и Tab после слова (один, два — неважно) остаются как есть.
+        while end > 0, chars[end - 1] == " " || chars[end - 1] == "\t" { end -= 1 }
         let tail = String(chars[end...])
         let start = (chars[..<end].lastIndex(where: { Self.boundaries.contains($0) }) ?? -1) + 1
         guard start < end else { return nil }

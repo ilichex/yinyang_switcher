@@ -134,6 +134,16 @@ private func auditDetector() -> Detector {
         #expect(session.invertLastWord()?.edit.removed == "ghbdt")
     }
 
+    @Test func manualInversionWorksAfterTab() {
+        // Слово набрано, затем Tab: ручная инверсия должна его найти, как и после пробела.
+        let session = TypingSession(detector: auditDetector())
+        session.type("лшсл")
+        #expect(session.boundary("\t", allowsAutomatic: false) == nil)
+        let edit = session.invertLastWord()?.edit
+        #expect(edit?.removed == "лшсл\t")
+        #expect(edit?.insert == "kick\t")
+    }
+
     @Test func symbolInversionUsesSourceLayout() {
         for (input, source, expected) in [(":", Lang.ru, "%"), ("%", .en, ":"), ("99:", .ru, "99%"), ("50,5:", .ru, "50,5%") ] {
             let session = TypingSession(detector: auditDetector())
